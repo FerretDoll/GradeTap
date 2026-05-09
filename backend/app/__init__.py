@@ -1,0 +1,1 @@
+"""GradeTap backend application package."""

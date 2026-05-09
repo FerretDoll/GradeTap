@@ -1,0 +1,9 @@
+name: gradetap
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - nodejs
+  - pip:
+      - -r backend/requirements.txt
