@@ -32,38 +32,19 @@
           <h1>{{ currentPage.title }}</h1>
         </div>
         <div class="topbar-actions">
-          <el-button
-            v-if="detailViews.includes(activeView)"
-            :icon="Back"
-            @click="returnToList"
-          >
+          <el-button v-if="detailViews.includes(activeView)" :icon="Back" @click="returnToList">
             返回列表
           </el-button>
           <el-button v-if="activeView === 'tasks'" :icon="Refresh" @click="taskStore.fetchTasks">
             刷新
           </el-button>
-          <el-button
-            v-if="activeView === 'tasks'"
-            type="primary"
-            :icon="Plus"
-            @click="openCreateTask"
-          >
+          <el-button v-if="activeView === 'tasks'" type="primary" :icon="Plus" @click="openCreateTask">
             新建任务
           </el-button>
-          <el-button
-            v-else-if="activeView === 'classes'"
-            type="primary"
-            :icon="Plus"
-            @click="openCreateClass"
-          >
+          <el-button v-else-if="activeView === 'classes'" type="primary" :icon="Plus" @click="openCreateClass">
             新建班级
           </el-button>
-          <el-button
-            v-else-if="activeView === 'courses'"
-            type="primary"
-            :icon="Plus"
-            @click="openCreateCourse"
-          >
+          <el-button v-else-if="activeView === 'courses'" type="primary" :icon="Plus" @click="openCreateCourse">
             新建课程
           </el-button>
         </div>
@@ -320,27 +301,52 @@
                   <h2>{{ selectedClass?.class_name || "班级" }}</h2>
                   <p>{{ selectedClass?.note || "未填写备注" }}</p>
                 </div>
-                <el-tag effect="plain">{{ selectedClass?.student_count ?? 0 }} 名学生</el-tag>
+                <el-tag effect="plain">{{ classStudents.length }} 名学生</el-tag>
               </div>
 
               <div class="detail-grid">
-                <div class="panel">
+                <div class="panel student-roster-panel">
                   <div class="panel-heading">
                     <div>
                       <span class="section-kicker">Students</span>
-                      <h2>学生概况</h2>
+                      <h2>学生名单</h2>
+                    </div>
+                    <div class="student-actions">
+                      <el-upload
+                        accept=".xlsx"
+                        :auto-upload="false"
+                        :show-file-list="false"
+                        :before-upload="importStudentsFromFile"
+                      >
+                        <el-button :icon="Upload" :loading="importingStudents">导入 Excel</el-button>
+                      </el-upload>
+                      <el-button type="primary" :icon="Plus" @click="openCreateStudent">
+                        手动添加
+                      </el-button>
                     </div>
                   </div>
-                  <div class="material-list">
-                    <div>
-                      <span>学生总数</span>
-                      <el-tag effect="plain">{{ selectedClass?.student_count ?? 0 }}</el-tag>
-                    </div>
-                    <div>
-                      <span>待复核作业</span>
-                      <el-tag effect="plain">暂无</el-tag>
-                    </div>
-                  </div>
+                  <el-table
+                    :data="classStudents"
+                    v-loading="studentLoading"
+                    height="360"
+                    class="task-table"
+                    empty-text="暂无学生，请导入 Excel 或手动添加"
+                  >
+                    <el-table-column prop="student_name" label="姓名" min-width="160" />
+                    <el-table-column prop="student_no" label="学号" min-width="160" align="center">
+                      <template #default="{ row }">
+                        <span>{{ row.student_no || "未填写" }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="操作" width="120" fixed="right" align="center">
+                      <template #default="{ row }">
+                        <div class="icon-actions">
+                          <el-button :icon="Edit" circle text title="编辑" @click="editStudent(row)" />
+                          <el-button :icon="Delete" circle text type="danger" title="删除" @click="deleteStudent(row)" />
+                        </div>
+                      </template>
+                    </el-table-column>
+                  </el-table>
                 </div>
 
                 <div class="panel">
@@ -351,6 +357,10 @@
                     </div>
                   </div>
                   <div class="material-list">
+                    <div>
+                      <span>学生总数</span>
+                      <el-tag effect="plain">{{ classStudents.length }}</el-tag>
+                    </div>
                     <div>
                       <span>批改任务</span>
                       <el-tag effect="plain">0</el-tag>
@@ -365,7 +375,7 @@
     </el-container>
   </el-container>
 
-  <el-dialog v-model="taskDialogVisible" :title="editingTaskId ? '编辑批改任务' : '新建批改任务'" width="600px" class="task-dialog">
+  <el-dialog v-model="taskDialogVisible" :title="editingTaskId ? '编辑批改任务' : '新建批改任务'" width="600px" :lock-scroll="false" class="task-dialog">
     <el-form :model="form" label-position="top">
       <div class="form-grid">
         <el-form-item label="作业名称">
@@ -373,32 +383,17 @@
         </el-form-item>
         <el-form-item label="课程名称">
           <el-select v-model="form.course_name" placeholder="请选择课程" class="form-control">
-            <el-option
-              v-for="course in courses"
-              :key="course.id"
-              :label="course.course_name"
-              :value="course.course_name"
-            />
+            <el-option v-for="course in courses" :key="course.id" :label="course.course_name" :value="course.course_name" />
           </el-select>
         </el-form-item>
       </div>
       <el-form-item label="班级名称">
         <el-select v-model="form.class_name" placeholder="请选择班级" class="form-control">
-          <el-option
-            v-for="classItem in classes"
-            :key="classItem.id"
-            :label="classItem.class_name"
-            :value="classItem.class_name"
-          />
+          <el-option v-for="classItem in classes" :key="classItem.id" :label="classItem.class_name" :value="classItem.class_name" />
         </el-select>
       </el-form-item>
       <el-form-item label="批改说明">
-        <el-input
-          v-model="form.grading_instruction"
-          type="textarea"
-          :rows="4"
-          placeholder="重点考查 SQL 语法、结果正确性和代码规范。"
-        />
+        <el-input v-model="form.grading_instruction" type="textarea" :rows="4" placeholder="重点考查 SQL 语法、结果正确性和代码规范。" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -409,18 +404,13 @@
     </template>
   </el-dialog>
 
-  <el-dialog v-model="classDialogVisible" :title="editingClassId ? '编辑班级' : '新建班级'" width="560px">
+  <el-dialog v-model="classDialogVisible" :title="editingClassId ? '编辑班级' : '新建班级'" width="560px" :lock-scroll="false">
     <el-form :model="classForm" label-position="top">
       <el-form-item label="班级名称">
         <el-input v-model="classForm.class_name" placeholder="软件 2301" />
       </el-form-item>
       <el-form-item label="备注">
-        <el-input
-          v-model="classForm.note"
-          type="textarea"
-          :rows="3"
-          placeholder="例如：高职软件技术专业，SQL 作业较多。"
-        />
+        <el-input v-model="classForm.note" type="textarea" :rows="3" placeholder="例如：高职软件技术专业，SQL 作业较多。" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -431,18 +421,30 @@
     </template>
   </el-dialog>
 
-  <el-dialog v-model="courseDialogVisible" :title="editingCourseId ? '编辑课程' : '新建课程'" width="600px">
+  <el-dialog v-model="studentDialogVisible" :title="editingStudentId ? '编辑学生' : '手动添加学生'" width="460px" :lock-scroll="false">
+    <el-form :model="studentForm" label-position="top">
+      <el-form-item label="姓名">
+        <el-input v-model="studentForm.student_name" placeholder="学生姓名" />
+      </el-form-item>
+      <el-form-item label="学号">
+        <el-input v-model="studentForm.student_no" placeholder="可留空，后续再补" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="studentDialogVisible = false">取消</el-button>
+      <el-button type="primary" :icon="editingStudentId ? Check : Plus" @click="submitStudent">
+        {{ editingStudentId ? "保存学生" : "添加学生" }}
+      </el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="courseDialogVisible" :title="editingCourseId ? '编辑课程' : '新建课程'" width="600px" :lock-scroll="false">
     <el-form :model="courseForm" label-position="top">
       <el-form-item label="课程名称">
         <el-input v-model="courseForm.course_name" placeholder="数据库应用技术" />
       </el-form-item>
       <el-form-item label="课程说明">
-        <el-input
-          v-model="courseForm.description"
-          type="textarea"
-          :rows="3"
-          placeholder="保存本课程相关作业和历史批改资料。"
-        />
+        <el-input v-model="courseForm.description" type="textarea" :rows="3" placeholder="保存本课程相关作业和历史批改资料。" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -467,9 +469,27 @@ import {
   Plus,
   Refresh,
   School,
+  Upload,
 } from "@element-plus/icons-vue";
 
 import { useTaskStore } from "./stores/taskStore";
+import {
+  createClassGroup,
+  createClassStudent,
+  deleteClassGroup,
+  deleteClassStudent,
+  importClassStudents,
+  listClasses,
+  listClassStudents,
+  updateClassGroup,
+  updateClassStudent,
+} from "./api/classes";
+import {
+  createCourse,
+  deleteCourse as deleteCourseApi,
+  listCourses,
+  updateCourse,
+} from "./api/courses";
 
 const taskStore = useTaskStore();
 const activeView = ref("tasks");
@@ -479,10 +499,14 @@ const selectedClassId = ref(null);
 const editingTaskId = ref(null);
 const editingCourseId = ref(null);
 const editingClassId = ref(null);
+const editingStudentId = ref(null);
 const taskDialogVisible = ref(false);
 const classDialogVisible = ref(false);
 const courseDialogVisible = ref(false);
+const studentDialogVisible = ref(false);
 const submitting = ref(false);
+const studentLoading = ref(false);
+const importingStudents = ref(false);
 
 const form = reactive({
   task_name: "",
@@ -501,86 +525,35 @@ const courseForm = reactive({
   description: "",
 });
 
-const courses = ref([
-  {
-    id: 1,
-    course_name: "数据库应用技术",
-    assignment_count: 8,
-    description: "SQL 作业、实验报告和课程项目批改资料",
-  },
-  {
-    id: 2,
-    course_name: "Python 程序设计",
-    assignment_count: 6,
-    description: "代码作业、函数练习和综合项目资料",
-  },
-]);
+const studentForm = reactive({
+  student_name: "",
+  student_no: "",
+});
 
-const classes = ref([
-  {
-    id: 1,
-    class_name: "软件 2301",
-    student_count: 45,
-    note: "SQL 作业与实验报告批改班级",
-  },
-  {
-    id: 2,
-    class_name: "软件 2302",
-    student_count: 42,
-    note: "代码作业批改班级",
-  },
-]);
+const courses = ref([]);
+const classes = ref([]);
+const classStudents = ref([]);
 
 const pageMeta = {
-  tasks: {
-    eyebrow: "Teacher Review Console",
-    title: "批改任务工作台",
-  },
-  classes: {
-    eyebrow: "Class Operations",
-    title: "班级管理",
-  },
-  courses: {
-    eyebrow: "Course Management",
-    title: "课程管理",
-  },
-  taskDetail: {
-    eyebrow: "Task Progress",
-    title: "任务进度",
-  },
-  courseDetail: {
-    eyebrow: "Course Detail",
-    title: "课程明细",
-  },
-  classDetail: {
-    eyebrow: "Class Detail",
-    title: "班级明细",
-  },
+  tasks: { eyebrow: "Teacher Review Console", title: "批改任务工作台" },
+  classes: { eyebrow: "Class Operations", title: "班级管理" },
+  courses: { eyebrow: "Course Management", title: "课程管理" },
+  taskDetail: { eyebrow: "Task Progress", title: "任务进度" },
+  courseDetail: { eyebrow: "Course Detail", title: "课程明细" },
+  classDetail: { eyebrow: "Class Detail", title: "班级明细" },
 };
 
 const detailViews = ["taskDetail", "courseDetail", "classDetail"];
 const currentPage = computed(() => pageMeta[activeView.value]);
 const activeMenu = computed(() => {
-  if (activeView.value === "taskDetail") {
-    return "tasks";
-  }
-  if (activeView.value === "courseDetail") {
-    return "courses";
-  }
-  if (activeView.value === "classDetail") {
-    return "classes";
-  }
+  if (activeView.value === "taskDetail") return "tasks";
+  if (activeView.value === "courseDetail") return "courses";
+  if (activeView.value === "classDetail") return "classes";
   return activeView.value;
 });
-const selectedTask = computed(() =>
-  taskStore.items.find((task) => task.id === selectedTaskId.value),
-);
-const selectedCourse = computed(() =>
-  courses.value.find((course) => course.id === selectedCourseId.value),
-);
-const selectedClass = computed(() =>
-  classes.value.find((classItem) => classItem.id === selectedClassId.value),
-);
+const selectedTask = computed(() => taskStore.items.find((task) => task.id === selectedTaskId.value));
+const selectedCourse = computed(() => courses.value.find((course) => course.id === selectedCourseId.value));
+const selectedClass = computed(() => classes.value.find((classItem) => classItem.id === selectedClassId.value));
 const selectedTaskProgress = computed(() => selectedTask.value?.progress ?? 0);
 
 const metrics = [
@@ -594,7 +567,7 @@ const classSummary = computed(() => [
   { label: "班级总数", value: classes.value.length },
   {
     label: "学生总数",
-    value: classes.value.reduce((sum, item) => sum + item.student_count, 0),
+    value: classes.value.reduce((sum, item) => sum + Number(item.student_count ?? 0), 0),
   },
 ]);
 
@@ -602,7 +575,7 @@ const courseSummary = computed(() => [
   { label: "课程总数", value: courses.value.length },
   {
     label: "作业数量",
-    value: courses.value.reduce((sum, item) => sum + item.assignment_count, 0),
+    value: courses.value.reduce((sum, item) => sum + Number(item.assignment_count ?? 0), 0),
   },
 ]);
 
@@ -617,9 +590,138 @@ const taskStages = [
 
 const taskMaterials = ["作业要求", "参考答案", "学生作业"];
 
+const LOCAL_COURSES_KEY = "gradetap.courses";
+const LOCAL_CLASSES_KEY = "gradetap.classes";
+const LOCAL_CLASS_STUDENTS_KEY = "gradetap.classStudents";
+
+function readLocalList(key) {
+  try {
+    return JSON.parse(window.localStorage.getItem(key) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalList(key, items) {
+  window.localStorage.setItem(key, JSON.stringify(items));
+}
+
+function readLocalStudentMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_CLASS_STUDENTS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalStudents(classId, students) {
+  const map = readLocalStudentMap();
+  map[classId] = students;
+  window.localStorage.setItem(LOCAL_CLASS_STUDENTS_KEY, JSON.stringify(map));
+}
+
+function readLocalStudents(classId) {
+  return readLocalStudentMap()[classId] ?? [];
+}
+
+function mergeById(primaryItems, secondaryItems) {
+  const seen = new Set();
+  return [...primaryItems, ...secondaryItems].filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function updateClassStudentCount(classId, count) {
+  classes.value = classes.value.map((item) =>
+    item.id === classId ? { ...item, student_count: count } : item,
+  );
+  writeLocalList(LOCAL_CLASSES_KEY, classes.value);
+}
+
+async function fetchCourses() {
+  try {
+    const remoteCourses = await listCourses();
+    courses.value = mergeById(remoteCourses, readLocalList(LOCAL_COURSES_KEY));
+  } catch {
+    courses.value = mergeById(readLocalList(LOCAL_COURSES_KEY), courses.value);
+  }
+  writeLocalList(LOCAL_COURSES_KEY, courses.value);
+}
+
+async function fetchClasses() {
+  try {
+    const remoteClasses = await listClasses();
+    classes.value = mergeById(remoteClasses, readLocalList(LOCAL_CLASSES_KEY));
+  } catch {
+    classes.value = mergeById(readLocalList(LOCAL_CLASSES_KEY), classes.value);
+  }
+  writeLocalList(LOCAL_CLASSES_KEY, classes.value);
+}
+
+async function fetchClassStudents(classId) {
+  studentLoading.value = true;
+  try {
+    const remoteStudents = await listClassStudents(classId);
+    classStudents.value = mergeById(remoteStudents, readLocalStudents(classId));
+  } catch {
+    classStudents.value = readLocalStudents(classId);
+  } finally {
+    studentLoading.value = false;
+  }
+  writeLocalStudents(classId, classStudents.value);
+  updateClassStudentCount(classId, classStudents.value.length);
+}
+
 onMounted(() => {
   taskStore.fetchTasks();
+  fetchCourses();
+  fetchClasses();
 });
+
+function handleMenuSelect(view) {
+  activeView.value = view;
+}
+
+function returnToList() {
+  if (activeView.value === "taskDetail") {
+    activeView.value = "tasks";
+    return;
+  }
+  if (activeView.value === "courseDetail") {
+    activeView.value = "courses";
+    return;
+  }
+  activeView.value = "classes";
+}
+
+function openCreateTask() {
+  editingTaskId.value = null;
+  Object.assign(form, {
+    task_name: "",
+    course_name: "",
+    class_name: "",
+    grading_instruction: "",
+  });
+  taskDialogVisible.value = true;
+}
+
+function openTaskDetail(task) {
+  selectedTaskId.value = task.id;
+  activeView.value = "taskDetail";
+}
+
+function editTask(task) {
+  editingTaskId.value = task.id;
+  Object.assign(form, {
+    task_name: task.task_name,
+    course_name: task.course_name,
+    class_name: task.class_name,
+    grading_instruction: task.grading_instruction,
+  });
+  taskDialogVisible.value = true;
+}
 
 function submitTask() {
   if (!form.task_name.trim()) {
@@ -658,70 +760,17 @@ function submitTask() {
   ElMessage.success(wasEditing ? "任务已保存" : "任务已创建");
 }
 
-function handleMenuSelect(view) {
-  activeView.value = view;
-}
-
-function openCreateTask() {
-  editingTaskId.value = null;
-  Object.assign(form, {
-    task_name: "",
-    course_name: "",
-    class_name: "",
-    grading_instruction: "",
-  });
-  taskDialogVisible.value = true;
-}
-
-function returnToList() {
-  if (activeView.value === "taskDetail") {
-    activeView.value = "tasks";
-    return;
-  }
-  if (activeView.value === "courseDetail") {
-    activeView.value = "courses";
-    return;
-  }
-  activeView.value = "classes";
-}
-
-function openTaskDetail(task) {
-  selectedTaskId.value = task.id;
-  activeView.value = "taskDetail";
-}
-
-function startTask(task) {
-  taskStore.startTask(task.id);
-  openTaskDetail(task);
-  ElMessage.success("批改已开始");
-}
-
-function editTask(task) {
-  editingTaskId.value = task.id;
-  Object.assign(form, {
-    task_name: task.task_name,
-    course_name: task.course_name,
-    class_name: task.class_name,
-    grading_instruction: task.grading_instruction,
-  });
-  taskDialogVisible.value = true;
-}
-
 async function deleteTask(task) {
   try {
-    await ElMessageBox.confirm(
-      `确定删除批改任务「${task.task_name}」吗？`,
-      "删除确认",
-      {
-        confirmButtonText: "删除",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
+    await ElMessageBox.confirm(`确定删除批改任务“${task.task_name}”吗？`, "删除确认", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      lockScroll: false,
+      type: "warning",
+    });
   } catch {
     return;
   }
-
   taskStore.deleteTask(task.id);
   if (selectedTaskId.value === task.id) {
     selectedTaskId.value = null;
@@ -730,64 +779,15 @@ async function deleteTask(task) {
   ElMessage.success("任务已删除");
 }
 
-function openCourseDetail(course) {
-  selectedCourseId.value = course.id;
-  activeView.value = "courseDetail";
-}
-
-function openClassDetail(classItem) {
-  selectedClassId.value = classItem.id;
-  activeView.value = "classDetail";
-}
-
-function openCreateClass() {
-  editingClassId.value = null;
-  Object.assign(classForm, {
-    class_name: "",
-    note: "",
-  });
-  classDialogVisible.value = true;
-}
-
 function openCreateCourse() {
   editingCourseId.value = null;
-  Object.assign(courseForm, {
-    course_name: "",
-    description: "",
-  });
+  Object.assign(courseForm, { course_name: "", description: "" });
   courseDialogVisible.value = true;
 }
 
-function editClass(classItem) {
-  editingClassId.value = classItem.id;
-  Object.assign(classForm, {
-    class_name: classItem.class_name,
-    note: classItem.note,
-  });
-  classDialogVisible.value = true;
-}
-
-async function deleteClass(classItem) {
-  try {
-    await ElMessageBox.confirm(
-      `确定删除班级「${classItem.class_name}」吗？`,
-      "删除确认",
-      {
-        confirmButtonText: "删除",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
-  } catch {
-    return;
-  }
-
-  classes.value = classes.value.filter((item) => item.id !== classItem.id);
-  if (selectedClassId.value === classItem.id) {
-    selectedClassId.value = null;
-    activeView.value = "classes";
-  }
-  ElMessage.success("班级已删除");
+function openCourseDetail(course) {
+  selectedCourseId.value = course.id;
+  activeView.value = "courseDetail";
 }
 
 function editCourse(course) {
@@ -799,22 +799,57 @@ function editCourse(course) {
   courseDialogVisible.value = true;
 }
 
+async function submitCourse() {
+  if (!courseForm.course_name.trim()) {
+    ElMessage.warning("请填写课程名称");
+    return;
+  }
+
+  const wasEditing = Boolean(editingCourseId.value);
+  const courseId = editingCourseId.value;
+  const payload = { ...courseForm };
+  if (wasEditing) {
+    courses.value = courses.value.map((item) => (item.id === courseId ? { ...item, ...payload } : item));
+  } else {
+    courses.value = [{ id: Date.now(), ...payload, assignment_count: 0 }, ...courses.value];
+  }
+  writeLocalList(LOCAL_COURSES_KEY, courses.value);
+
+  try {
+    const serverCourse = wasEditing ? await updateCourse(courseId, payload) : await createCourse(payload);
+    courses.value = wasEditing
+      ? courses.value.map((item) => (item.id === courseId ? serverCourse : item))
+      : [serverCourse, ...courses.value.filter((item) => item.id !== serverCourse.id && item.course_name !== payload.course_name)];
+    writeLocalList(LOCAL_COURSES_KEY, courses.value);
+  } catch {
+    ElMessage.warning("课程已保存在本地，后端同步失败");
+  }
+
+  Object.assign(courseForm, { course_name: "", description: "" });
+  editingCourseId.value = null;
+  courseDialogVisible.value = false;
+  ElMessage.success(wasEditing ? "课程已保存" : "课程已创建");
+}
+
 async function deleteCourse(course) {
   try {
-    await ElMessageBox.confirm(
-      `确定删除课程「${course.course_name}」吗？`,
-      "删除确认",
-      {
-        confirmButtonText: "删除",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
+    await ElMessageBox.confirm(`确定删除课程“${course.course_name}”吗？`, "删除确认", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      lockScroll: false,
+      type: "warning",
+    });
   } catch {
     return;
   }
 
   courses.value = courses.value.filter((item) => item.id !== course.id);
+  writeLocalList(LOCAL_COURSES_KEY, courses.value);
+  try {
+    await deleteCourseApi(course.id);
+  } catch {
+    ElMessage.warning("课程已从本地移除，但后端删除失败");
+  }
   if (selectedCourseId.value === course.id) {
     selectedCourseId.value = null;
     activeView.value = "courses";
@@ -822,79 +857,184 @@ async function deleteCourse(course) {
   ElMessage.success("课程已删除");
 }
 
-function submitClass() {
+function openCreateClass() {
+  editingClassId.value = null;
+  Object.assign(classForm, { class_name: "", note: "" });
+  classDialogVisible.value = true;
+}
+
+async function openClassDetail(classItem) {
+  selectedClassId.value = classItem.id;
+  activeView.value = "classDetail";
+  await fetchClassStudents(classItem.id);
+}
+
+function editClass(classItem) {
+  editingClassId.value = classItem.id;
+  Object.assign(classForm, {
+    class_name: classItem.class_name,
+    note: classItem.note,
+  });
+  classDialogVisible.value = true;
+}
+
+async function submitClass() {
   if (!classForm.class_name.trim()) {
     ElMessage.warning("请填写班级名称");
     return;
   }
 
   const wasEditing = Boolean(editingClassId.value);
+  const classId = editingClassId.value;
+  const payload = { ...classForm };
   if (wasEditing) {
-    classes.value = classes.value.map((item) =>
-      item.id === editingClassId.value
-        ? {
-            ...item,
-            class_name: classForm.class_name,
-            note: classForm.note,
-          }
-        : item,
-    );
+    classes.value = classes.value.map((item) => (item.id === classId ? { ...item, ...payload } : item));
   } else {
-    classes.value = [
-      {
-        id: Date.now(),
-        class_name: classForm.class_name,
-        student_count: 0,
-        note: classForm.note,
-      },
-      ...classes.value,
-    ];
+    classes.value = [{ id: Date.now(), ...payload, student_count: 0 }, ...classes.value];
+  }
+  writeLocalList(LOCAL_CLASSES_KEY, classes.value);
+
+  try {
+    const serverClass = wasEditing ? await updateClassGroup(classId, payload) : await createClassGroup(payload);
+    classes.value = wasEditing
+      ? classes.value.map((item) => (item.id === classId ? serverClass : item))
+      : [serverClass, ...classes.value.filter((item) => item.id !== serverClass.id && item.class_name !== payload.class_name)];
+    writeLocalList(LOCAL_CLASSES_KEY, classes.value);
+  } catch {
+    ElMessage.warning("班级已保存在本地，后端同步失败");
   }
 
-  Object.assign(classForm, {
-    class_name: "",
-    note: "",
-  });
+  Object.assign(classForm, { class_name: "", note: "" });
   editingClassId.value = null;
   classDialogVisible.value = false;
   ElMessage.success(wasEditing ? "班级已保存" : "班级已创建");
 }
 
-function submitCourse() {
-  if (!courseForm.course_name.trim()) {
-    ElMessage.warning("请填写课程名称");
+async function deleteClass(classItem) {
+  try {
+    await ElMessageBox.confirm(`确定删除班级“${classItem.class_name}”吗？`, "删除确认", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      lockScroll: false,
+      type: "warning",
+    });
+  } catch {
     return;
   }
 
-  const wasEditing = Boolean(editingCourseId.value);
-  if (wasEditing) {
-    courses.value = courses.value.map((item) =>
-      item.id === editingCourseId.value
-        ? {
-            ...item,
-            course_name: courseForm.course_name,
-            description: courseForm.description,
-          }
-        : item,
-    );
-  } else {
-    courses.value = [
-      {
-        id: Date.now(),
-        course_name: courseForm.course_name,
-        assignment_count: 0,
-        description: courseForm.description,
-      },
-      ...courses.value,
-    ];
+  classes.value = classes.value.filter((item) => item.id !== classItem.id);
+  writeLocalList(LOCAL_CLASSES_KEY, classes.value);
+  try {
+    await deleteClassGroup(classItem.id);
+  } catch {
+    ElMessage.warning("班级已从本地移除，但后端删除失败");
+  }
+  if (selectedClassId.value === classItem.id) {
+    selectedClassId.value = null;
+    activeView.value = "classes";
+  }
+  ElMessage.success("班级已删除");
+}
+
+function openCreateStudent() {
+  editingStudentId.value = null;
+  Object.assign(studentForm, { student_name: "", student_no: "" });
+  studentDialogVisible.value = true;
+}
+
+function editStudent(student) {
+  editingStudentId.value = student.id;
+  Object.assign(studentForm, {
+    student_name: student.student_name,
+    student_no: student.student_no,
+  });
+  studentDialogVisible.value = true;
+}
+
+async function submitStudent() {
+  if (!selectedClassId.value) return;
+  if (!studentForm.student_name.trim()) {
+    ElMessage.warning("请填写学生姓名");
+    return;
   }
 
-  Object.assign(courseForm, {
-    course_name: "",
-    description: "",
-  });
-  editingCourseId.value = null;
-  courseDialogVisible.value = false;
-  ElMessage.success(wasEditing ? "课程已保存" : "课程已创建");
+  const classId = selectedClassId.value;
+  const wasEditing = Boolean(editingStudentId.value);
+  const studentId = editingStudentId.value;
+  const payload = {
+    student_name: studentForm.student_name.trim(),
+    student_no: studentForm.student_no.trim(),
+  };
+
+  if (wasEditing) {
+    classStudents.value = classStudents.value.map((item) => (item.id === studentId ? { ...item, ...payload } : item));
+  } else {
+    classStudents.value = [{ id: Date.now(), class_group_id: classId, ...payload }, ...classStudents.value];
+  }
+  writeLocalStudents(classId, classStudents.value);
+  updateClassStudentCount(classId, classStudents.value.length);
+
+  try {
+    const serverStudent = wasEditing
+      ? await updateClassStudent(classId, studentId, payload)
+      : await createClassStudent(classId, payload);
+    classStudents.value = wasEditing
+      ? classStudents.value.map((item) => (item.id === studentId ? serverStudent : item))
+      : [serverStudent, ...classStudents.value.filter((item) => item.id !== serverStudent.id && item.id !== studentId)];
+    writeLocalStudents(classId, classStudents.value);
+    updateClassStudentCount(classId, classStudents.value.length);
+  } catch {
+    ElMessage.warning("学生已保存在本地，后端同步失败");
+  }
+
+  Object.assign(studentForm, { student_name: "", student_no: "" });
+  editingStudentId.value = null;
+  studentDialogVisible.value = false;
+  ElMessage.success(wasEditing ? "学生已保存" : "学生已添加");
+}
+
+async function deleteStudent(student) {
+  if (!selectedClassId.value) return;
+  try {
+    await ElMessageBox.confirm(`确定删除学生“${student.student_name}”吗？`, "删除确认", {
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+      lockScroll: false,
+      type: "warning",
+    });
+  } catch {
+    return;
+  }
+
+  const classId = selectedClassId.value;
+  classStudents.value = classStudents.value.filter((item) => item.id !== student.id);
+  writeLocalStudents(classId, classStudents.value);
+  updateClassStudentCount(classId, classStudents.value.length);
+
+  try {
+    await deleteClassStudent(classId, student.id);
+  } catch {
+    ElMessage.warning("学生已从本地移除，但后端删除失败");
+  }
+  ElMessage.success("学生已删除");
+}
+
+async function importStudentsFromFile(file) {
+  if (!selectedClassId.value) {
+    ElMessage.warning("请先进入班级明细页");
+    return false;
+  }
+  importingStudents.value = true;
+  try {
+    const result = await importClassStudents(selectedClassId.value, file);
+    await fetchClassStudents(selectedClassId.value);
+    await fetchClasses();
+    ElMessage.success(`导入 ${result.imported_count} 名学生，跳过 ${result.skipped_count} 条重复记录`);
+  } catch {
+    ElMessage.error("导入失败，请确认 Excel 为 .xlsx，表头包含“姓名”，可选“学号”");
+  } finally {
+    importingStudents.value = false;
+  }
+  return false;
 }
 </script>

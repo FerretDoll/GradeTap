@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.db.init_db import init_db
 
 
 def create_app() -> FastAPI:
@@ -17,6 +18,10 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix=settings.api_prefix)
+
+    @app.on_event("startup")
+    def on_startup() -> None:
+        init_db()
 
     @app.get("/health", tags=["health"])
     def health_check() -> dict[str, str]:

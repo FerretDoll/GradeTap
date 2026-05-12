@@ -1,11 +1,16 @@
 PIPELINE_STAGES = [
     "parse_files",
-    "set_score",
+    "analyze_questions",
+    "build_rubrics",
+    "wait_for_teacher_confirm_rubrics",
     "prepare_students",
     "extract_answers",
-    "group_answers",
+    "extract_evidence",
     "grade_by_question",
-    "teacher_review",
+    "reflect_grading",
+    "route_review",
+    "wait_for_teacher_review",
+    "export_results",
     "summary",
 ]
 

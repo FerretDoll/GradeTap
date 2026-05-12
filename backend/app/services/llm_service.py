@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import json
-from typing import Any
+from typing import Any, Optional
 
 
 class LLMService:
@@ -9,7 +11,7 @@ class LLMService:
     APIs directly.
     """
 
-    def chat_json(self, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    def chat_json(self, prompt: str, schema: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         raise NotImplementedError("Configure an LLM provider before calling chat_json.")
 
     def chat_text(self, prompt: str) -> str:
