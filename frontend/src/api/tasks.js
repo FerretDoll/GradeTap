@@ -17,6 +17,10 @@ export async function listTaskFiles(taskId) {
   return response.data;
 }
 
+export async function deleteTask(taskId) {
+  await apiClient.delete(`/tasks/${taskId}`);
+}
+
 export async function uploadTaskFile(taskId, fileRole, file) {
   const formData = new FormData();
   formData.append("file", file);

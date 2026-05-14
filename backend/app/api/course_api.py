@@ -6,6 +6,7 @@ from app.models.file import FileRole
 from app.schemas.course import (
     CourseAssignmentCreate,
     CourseAssignmentFileRead,
+    CourseAssignmentQuestionsUpdate,
     CourseAssignmentRead,
     CourseAssignmentUpdate,
     CourseCreate,
@@ -109,3 +110,27 @@ def delete_assignment_file(course_id: int, assignment_id: int, file_id: int) -> 
 @router.post("/{course_id}/assignments/{assignment_id}/parse-files")
 def parse_assignment_files(course_id: int, assignment_id: int) -> dict:
     return course_service.parse_assignment_files(course_id, assignment_id)
+
+
+@router.post("/{course_id}/assignments/{assignment_id}/analyze-questions")
+def analyze_assignment_questions(course_id: int, assignment_id: int) -> dict:
+    return course_service.analyze_assignment_questions(course_id, assignment_id)
+
+
+@router.post("/{course_id}/assignments/{assignment_id}/build-rubrics")
+def build_assignment_rubrics(course_id: int, assignment_id: int) -> dict:
+    return course_service.build_assignment_rubrics(course_id, assignment_id)
+
+
+@router.get("/{course_id}/assignments/{assignment_id}/questions")
+def list_assignment_questions(course_id: int, assignment_id: int) -> dict:
+    return course_service.list_assignment_questions(course_id, assignment_id)
+
+
+@router.put("/{course_id}/assignments/{assignment_id}/questions")
+def confirm_assignment_rubrics(
+    course_id: int,
+    assignment_id: int,
+    payload: CourseAssignmentQuestionsUpdate,
+) -> dict:
+    return course_service.confirm_assignment_rubrics(course_id, assignment_id, payload)

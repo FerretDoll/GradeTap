@@ -58,9 +58,17 @@ class CourseAssignment(TimestampMixin, Base):
     assignment_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     total_score: Mapped[float] = mapped_column(Float, default=100, nullable=False)
+    questions_payload: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    rubrics_payload: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    rubric_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    rubric_confirmed_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)
 
     course: Mapped[Course] = relationship(back_populates="assignments")
     files: Mapped[list["CourseAssignmentFile"]] = relationship(
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+    )
+    questions: Mapped[list["CourseAssignmentQuestion"]] = relationship(
         back_populates="assignment",
         cascade="all, delete-orphan",
     )
@@ -78,6 +86,43 @@ class CourseAssignmentFile(TimestampMixin, Base):
     parsed_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
     assignment: Mapped[CourseAssignment] = relationship(back_populates="files")
+
+
+class CourseAssignmentQuestion(TimestampMixin, Base):
+    __tablename__ = "course_assignment_question"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    assignment_id: Mapped[int] = mapped_column(ForeignKey("course_assignment.id"), nullable=False)
+    question_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    question_type: Mapped[QuestionType] = mapped_column(Enum(QuestionType, values_callable=enum_values), nullable=False)
+    knowledge_points: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    difficulty: Mapped[DifficultyLevel] = mapped_column(Enum(DifficultyLevel, values_callable=enum_values), nullable=False)
+    expected_answer_type: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    total_score: Mapped[float] = mapped_column(Float, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    assignment: Mapped[CourseAssignment] = relationship(back_populates="questions")
+    rubrics: Mapped[list["CourseAssignmentQuestionRubric"]] = relationship(
+        back_populates="question",
+        cascade="all, delete-orphan",
+    )
+
+
+class CourseAssignmentQuestionRubric(TimestampMixin, Base):
+    __tablename__ = "course_assignment_question_rubric"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    assignment_question_id: Mapped[int] = mapped_column(ForeignKey("course_assignment_question.id"), nullable=False)
+    dimension_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    dimension_description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    max_score: Mapped[float] = mapped_column(Float, nullable=False)
+    scoring_criteria: Mapped[str] = mapped_column(Text, nullable=False)
+    deduction_criteria: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_requirement: Mapped[str] = mapped_column(Text, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    question: Mapped[CourseAssignmentQuestion] = relationship(back_populates="rubrics")
 
 
 class ClassGroup(TimestampMixin, Base):

@@ -61,3 +61,27 @@ export async function parseCourseAssignmentFiles(courseId, assignmentId) {
   const response = await apiClient.post(`/courses/${courseId}/assignments/${assignmentId}/parse-files`);
   return response.data;
 }
+
+export async function analyzeCourseAssignmentQuestions(courseId, assignmentId) {
+  const response = await apiClient.post(`/courses/${courseId}/assignments/${assignmentId}/analyze-questions`, null, {
+    timeout: 180000,
+  });
+  return response.data;
+}
+
+export async function buildCourseAssignmentRubrics(courseId, assignmentId) {
+  const response = await apiClient.post(`/courses/${courseId}/assignments/${assignmentId}/build-rubrics`, null, {
+    timeout: 180000,
+  });
+  return response.data;
+}
+
+export async function listCourseAssignmentQuestions(courseId, assignmentId) {
+  const response = await apiClient.get(`/courses/${courseId}/assignments/${assignmentId}/questions`);
+  return response.data;
+}
+
+export async function confirmCourseAssignmentRubrics(courseId, assignmentId, payload) {
+  const response = await apiClient.put(`/courses/${courseId}/assignments/${assignmentId}/questions`, payload);
+  return response.data;
+}

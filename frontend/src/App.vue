@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-container class="app-shell grade-console">
     <el-aside class="sidebar" width="264px">
       <div class="brand-lockup">
@@ -159,9 +159,9 @@
                     </div>
                   </div>
                   <el-progress :percentage="selectedTaskProgress" :stroke-width="10" />
-                  <div class="progress-stages" :style="{ '--stage-count': taskStages.length }">
+                  <div class="progress-stages" :style="{ '--stage-count': visibleTaskStages.length }">
                     <button
-                      v-for="stage in taskStages"
+                      v-for="stage in visibleTaskStages"
                       :key="stage.key"
                       type="button"
                       class="progress-stage"
@@ -229,7 +229,13 @@
                             {{ formatKnowledgePoints(row.knowledge_points) }}
                           </template>
                         </el-table-column>
-                        <el-table-column prop="difficulty" label="难度" width="100" align="center" />
+                        <el-table-column label="难度" width="100" align="center">
+                          <template #default="{ row }">
+                            <el-tag :type="difficultyMeta(row.difficulty).type" effect="light">
+                              {{ difficultyMeta(row.difficulty).label }}
+                            </el-tag>
+                          </template>
+                        </el-table-column>
                         <el-table-column prop="total_score" label="分值" width="90" align="center" />
                       </el-table>
                       <el-empty
@@ -347,7 +353,7 @@
                   <el-tag effect="plain">{{ courses.length }} 门课程</el-tag>
                 </div>
 
-                <el-table :data="courses" height="448" class="task-table" empty-text="暂无课程">
+                <el-table :data="courses" height="100%" class="task-table" empty-text="暂无课程">
                   <el-table-column prop="course_name" label="课程名称" min-width="260">
                     <template #default="{ row }">
                       <button class="task-name-cell task-name-button" @click="openCourseDetail(row)">
@@ -404,14 +410,20 @@
                         </template>
                       </div>
                     </div>
-                    <el-button type="primary" :icon="Plus" @click="openCreateAssignment">
+                    <el-button v-if="!selectedCourseAssignment" type="primary" :icon="Plus" @click="openCreateAssignment">
                       新建作业
                     </el-button>
+                    <div v-else class="assignment-heading-status">
+                      <el-tag :type="selectedAssignmentRubricConfirmed ? 'success' : 'warning'" effect="light">
+                        {{ selectedAssignmentRubricConfirmed ? "量规已绑定" : "待确认量规" }}
+                      </el-tag>
+                    </div>
                   </div>
                   <el-table
+                    v-if="!selectedCourseAssignment"
                     :data="courseAssignments"
                     v-loading="assignmentLoading"
-                    height="360"
+                    height="100%"
                     class="task-table"
                     empty-text="暂无课程作业，请先新建作业"
                   >
@@ -442,6 +454,126 @@
                       </template>
                     </el-table-column>
                   </el-table>
+                  <Transition name="assignment-material">
+                    <div v-if="selectedCourseAssignment" class="assignment-workflow-panel">
+                      <el-progress :percentage="selectedAssignmentRubricProgress" :stroke-width="10" />
+                      <div class="progress-stages" :style="{ '--stage-count': assignmentRubricStages.length }">
+                        <button
+                          v-for="stage in assignmentRubricStages"
+                          :key="stage.key"
+                          type="button"
+                          class="progress-stage"
+                          :class="{
+                            active: stage.key === activeAssignmentRubricStage.key,
+                            current: stage.key === currentAssignmentRubricStageKey,
+                          }"
+                          @click="selectAssignmentRubricStage(stage.key)"
+                        >
+                          <strong>{{ stage.title }}</strong>
+                          <span>{{ stage.caption }}</span>
+                        </button>
+                      </div>
+                      <div class="progress-stage-detail">
+                        <div class="stage-detail-title">
+                          <div>
+                            <span class="section-kicker">{{ activeAssignmentRubricStage.eyebrow }}</span>
+                            <h3>{{ activeAssignmentRubricStage.title }}</h3>
+                          </div>
+                          <div class="stage-detail-actions">
+                            <el-tag effect="plain">{{ activeAssignmentRubricStageStatus }}</el-tag>
+                            <el-button
+                              v-if="activeAssignmentRubricStage.key === 'analyze_questions'"
+                              size="small"
+                              type="primary"
+                              :loading="assignmentQuestionAnalysisLoading"
+                              @click="runAssignmentQuestionAnalysis"
+                            >
+                              开始题目分析
+                            </el-button>
+                            <el-button
+                              v-else-if="activeAssignmentRubricStage.key === 'build_rubrics'"
+                              size="small"
+                              type="primary"
+                              :disabled="!selectedAssignmentQuestions.length"
+                              :loading="assignmentRubricBuildLoading"
+                              @click="runAssignmentRubricBuild"
+                            >
+                              生成评分量规
+                            </el-button>
+                            <el-button
+                              v-else-if="activeAssignmentRubricStage.key === 'teacher_confirm_rubrics'"
+                              size="small"
+                              type="success"
+                              :disabled="!selectedAssignmentHasRubrics"
+                              :loading="assignmentRubricConfirmLoading"
+                              @click="confirmSelectedAssignmentRubrics"
+                            >
+                              确认并绑定
+                            </el-button>
+                          </div>
+                        </div>
+                        <p>{{ activeAssignmentRubricStage.detail }}</p>
+                        <div class="progress-stage-result">
+                          <el-table
+                            v-if="activeAssignmentRubricStage.key === 'analyze_questions' && selectedAssignmentQuestions.length"
+                            :data="selectedAssignmentQuestions"
+                            size="small"
+                            height="100%"
+                            class="task-table question-analysis-table"
+                          >
+                            <el-table-column prop="question_number" label="题号" width="80" align="center" />
+                            <el-table-column prop="content" label="题干" min-width="220" show-overflow-tooltip />
+                            <el-table-column prop="question_type" label="题型" width="120" align="center" />
+                            <el-table-column label="知识点" min-width="160" show-overflow-tooltip>
+                              <template #default="{ row }">
+                                {{ formatKnowledgePoints(row.knowledge_points) }}
+                              </template>
+                            </el-table-column>
+                            <el-table-column label="难度" width="100" align="center">
+                              <template #default="{ row }">
+                                <el-tag :type="difficultyMeta(row.difficulty).type" effect="light">
+                                  {{ difficultyMeta(row.difficulty).label }}
+                                </el-tag>
+                              </template>
+                            </el-table-column>
+                            <el-table-column prop="total_score" label="分值" width="90" align="center" />
+                          </el-table>
+                          <div
+                            v-else-if="activeAssignmentRubricStage.key !== 'analyze_questions' && selectedAssignmentQuestions.length"
+                            class="assignment-rubric-list"
+                          >
+                            <div
+                              v-for="question in selectedAssignmentQuestions"
+                              :key="question.question_number"
+                              class="assignment-rubric-item"
+                            >
+                              <div class="assignment-rubric-title">
+                                <strong>{{ question.question_number }}. {{ question.content }}</strong>
+                                <el-tag effect="plain">{{ question.total_score }} 分</el-tag>
+                              </div>
+                              <el-table
+                                :data="question.rubrics ?? []"
+                                size="small"
+                                class="task-table"
+                                empty-text="尚未生成评分量规"
+                              >
+                                <el-table-column prop="dimension_name" label="评分维度" min-width="130" />
+                                <el-table-column prop="max_score" label="分值" width="80" align="center" />
+                                <el-table-column prop="scoring_criteria" label="得分条件" min-width="180" show-overflow-tooltip />
+                                <el-table-column prop="deduction_criteria" label="扣分条件" min-width="180" show-overflow-tooltip />
+                                <el-table-column prop="evidence_requirement" label="证据要求" min-width="180" show-overflow-tooltip />
+                              </el-table>
+                            </div>
+                          </div>
+                          <el-empty
+                            v-else
+                            description="点击当前步骤按钮后，将在这里查看作业题目、量规和确认状态"
+                            :image-size="72"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </Transition>
                 </div>
 
                 <Transition name="assignment-material">
@@ -542,7 +674,7 @@
                   <el-tag effect="plain">{{ classes.length }} 个班级</el-tag>
                 </div>
 
-                <el-table :data="classes" height="448" class="task-table" empty-text="暂无班级">
+                <el-table :data="classes" height="100%" class="task-table" empty-text="暂无班级">
                   <el-table-column prop="class_name" label="班级名称" min-width="180">
                     <template #default="{ row }">
                       <button class="task-name-cell task-name-button" @click="openClassDetail(row)">
@@ -602,7 +734,7 @@
                   <el-table
                     :data="classStudents"
                     v-loading="studentLoading"
-                    height="360"
+                    height="100%"
                     class="task-table"
                     empty-text="暂无学生，请导入 Excel 或手动添加"
                   >
@@ -887,13 +1019,14 @@
   <el-dialog
     v-model="parsedPreviewVisible"
     :title="parsedPreviewFile ? `${parsedPreviewFile.file_name} · 解析文本` : '解析文本'"
-    width="760px"
+    width="min(1080px, 92vw)"
     :lock-scroll="false"
+    class="parsed-preview-dialog"
   >
     <el-input
       :model-value="parsedPreviewFile?.parsed_text || '暂无解析文本'"
       type="textarea"
-      :rows="18"
+      :rows="26"
       readonly
     />
   </el-dialog>
@@ -929,11 +1062,15 @@ import {
   updateClassStudent,
 } from "./api/classes";
 import {
+  analyzeCourseAssignmentQuestions,
+  buildCourseAssignmentRubrics,
+  confirmCourseAssignmentRubrics,
   createCourseAssignment,
   createCourse,
   deleteCourseAssignment,
   deleteCourseAssignmentFile,
   deleteCourse as deleteCourseApi,
+  listCourseAssignmentQuestions,
   listCourses,
   listCourseAssignments,
   listCourseAssignmentFiles,
@@ -943,6 +1080,7 @@ import {
   uploadCourseAssignmentFile,
 } from "./api/courses";
 import {
+  deleteTask as deleteTaskApi,
   deleteTaskFile,
   listTaskQuestions,
   listTaskFiles,
@@ -963,6 +1101,7 @@ const selectedCourseAssignmentId = ref(null);
 const courseAssignmentLayoutExpanded = ref(false);
 const selectedClassId = ref(null);
 const selectedProgressStageKey = ref("");
+const selectedAssignmentRubricStageKey = ref("");
 const editingTaskId = ref(null);
 const editingCourseId = ref(null);
 const editingAssignmentId = ref(null);
@@ -987,11 +1126,12 @@ const assignmentFileDeletingId = ref(null);
 const parseFilesLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
+const assignmentQuestionAnalysisLoading = ref(false);
+const assignmentRubricBuildLoading = ref(false);
+const assignmentRubricConfirmLoading = ref(false);
 const llmSettingsLoading = ref(false);
 const apiKeyEditing = ref(false);
 const taskFileUploading = reactive({
-  requirement: false,
-  reference_answer: false,
   student_submission: false,
 });
 const assignmentFileUploading = reactive({
@@ -1077,6 +1217,19 @@ const selectedCourseAssignment = computed(() =>
 const selectedClass = computed(() => classes.value.find((classItem) => classItem.id === selectedClassId.value));
 const selectedTaskProgress = computed(() => selectedTask.value?.progress ?? 0);
 const selectedAssignmentFileGroup = computed(() => getAssignmentFileGroup(selectedCourseAssignmentId.value));
+const selectedAssignmentRubricState = computed(() => getAssignmentRubricState(selectedCourseAssignmentId.value));
+const selectedAssignmentQuestions = computed(() => selectedAssignmentRubricState.value.questions ?? []);
+const selectedAssignmentRubricConfirmed = computed(() => Boolean(selectedAssignmentRubricState.value.rubric_confirmed));
+const selectedAssignmentHasRubrics = computed(() =>
+  selectedAssignmentQuestions.value.some((question) => Array.isArray(question.rubrics) && question.rubrics.length),
+);
+const selectedAssignmentRubricStep = computed(() => {
+  if (selectedAssignmentRubricConfirmed.value) return 3;
+  if (selectedAssignmentHasRubrics.value) return 2;
+  if (selectedAssignmentQuestions.value.length) return 1;
+  return 0;
+});
+const selectedAssignmentRubricProgress = computed(() => Math.round((selectedAssignmentRubricStep.value / 3) * 100));
 const selectedTaskFileGroup = computed(() => getTaskFileGroup(selectedTaskId.value));
 const uploadedAssignmentFileCount = computed(() =>
   Object.values(selectedAssignmentFileGroup.value).reduce((sum, files) => sum + files.length, 0),
@@ -1261,9 +1414,20 @@ const taskStages = [
 ];
 
 function normalizeProgressStageKey(backendKey) {
-  if (backendKey === "parse_files") return "analyze_questions";
+  if (
+    backendKey === "parse_files"
+    || backendKey === "analyze_questions"
+    || backendKey === "build_rubrics"
+    || backendKey === "teacher_confirm_rubrics"
+  ) {
+    return "prepare_students";
+  }
   return backendKey;
 }
+
+const assignmentStageKeys = new Set(["analyze_questions", "build_rubrics", "teacher_confirm_rubrics"]);
+const visibleTaskStages = computed(() => taskStages.filter((stage) => !assignmentStageKeys.has(stage.key)));
+const assignmentRubricStages = computed(() => taskStages.filter((stage) => assignmentStageKeys.has(stage.key)));
 
 const normalizedTaskProgressStageKey = computed(() =>
   normalizeProgressStageKey(selectedTask.value?.current_stage),
@@ -1272,35 +1436,45 @@ const normalizedTaskProgressStageKey = computed(() =>
 const activeProgressStage = computed(() => {
   const rawKey = selectedProgressStageKey.value || selectedTask.value?.current_stage;
   const selectedKey = normalizeProgressStageKey(rawKey) || taskStages[0].key;
-  return taskStages.find((stage) => stage.key === selectedKey) ?? taskStages[0];
+  return visibleTaskStages.value.find((stage) => stage.key === selectedKey) ?? visibleTaskStages.value[0];
 });
 
 const currentProgressStageIndex = computed(() =>
-  taskStages.findIndex((stage) => stage.key === normalizedTaskProgressStageKey.value),
+  visibleTaskStages.value.findIndex((stage) => stage.key === normalizedTaskProgressStageKey.value),
 );
 
 const activeProgressStageStatus = computed(() => {
-  const activeIndex = taskStages.findIndex((stage) => stage.key === activeProgressStage.value.key);
+  const activeIndex = visibleTaskStages.value.findIndex((stage) => stage.key === activeProgressStage.value.key);
   if (activeIndex === currentProgressStageIndex.value) return "进行中";
   if (currentProgressStageIndex.value >= 0 && activeIndex < currentProgressStageIndex.value) return "已完成";
   return "待开始";
 });
 
+const currentAssignmentRubricStageKey = computed(() => {
+  if (selectedAssignmentRubricConfirmed.value) return "teacher_confirm_rubrics";
+  if (selectedAssignmentHasRubrics.value) return "teacher_confirm_rubrics";
+  if (selectedAssignmentQuestions.value.length) return "build_rubrics";
+  return "analyze_questions";
+});
+
+const activeAssignmentRubricStage = computed(() => {
+  const selectedKey = selectedAssignmentRubricStageKey.value || currentAssignmentRubricStageKey.value;
+  return assignmentRubricStages.value.find((stage) => stage.key === selectedKey) ?? assignmentRubricStages.value[0];
+});
+
+const activeAssignmentRubricStageStatus = computed(() => {
+  const activeIndex = assignmentRubricStages.value.findIndex(
+    (stage) => stage.key === activeAssignmentRubricStage.value.key,
+  );
+  const currentIndex = assignmentRubricStages.value.findIndex(
+    (stage) => stage.key === currentAssignmentRubricStageKey.value,
+  );
+  if (activeIndex === currentIndex) return selectedAssignmentRubricConfirmed.value ? "已完成" : "进行中";
+  if (activeIndex < currentIndex || selectedAssignmentRubricConfirmed.value) return "已完成";
+  return "待开始";
+});
+
 const taskMaterials = [
-  {
-    role: "requirement",
-    title: "作业要求",
-    description: "仅保留一个文件，重新上传会替换旧文件",
-    multiple: false,
-    accept: ".doc,.docx,.pdf,.txt,.md",
-  },
-  {
-    role: "reference_answer",
-    title: "参考答案",
-    description: "仅保留一个文件，重新上传会替换旧文件",
-    multiple: false,
-    accept: ".doc,.docx,.pdf,.txt,.md",
-  },
   {
     role: "student_submission",
     title: "学生作业",
@@ -1330,6 +1504,7 @@ const assignmentMaterials = [
 const LOCAL_COURSES_KEY = "gradetap.courses";
 const LOCAL_COURSE_ASSIGNMENTS_KEY = "gradetap.courseAssignments";
 const LOCAL_COURSE_ASSIGNMENT_FILES_KEY = "gradetap.courseAssignmentFiles";
+const LOCAL_COURSE_ASSIGNMENT_RUBRICS_KEY = "gradetap.courseAssignmentRubrics";
 const LOCAL_CLASSES_KEY = "gradetap.classes";
 const LOCAL_CLASS_STUDENTS_KEY = "gradetap.classStudents";
 const LOCAL_LLM_SETTINGS_KEY = "gradetap.llmSettings";
@@ -1337,6 +1512,7 @@ const LOCAL_TASK_FILES_KEY = "gradetap.taskFiles";
 
 const assignmentFileMap = ref(readLocalAssignmentFileMap());
 const taskFileMap = ref(readLocalTaskFileMap());
+const assignmentRubricMap = ref(readLocalAssignmentRubricMap());
 
 function readLocalList(key) {
   try {
@@ -1394,6 +1570,18 @@ function readLocalAssignmentFileMap() {
 
 function writeLocalAssignmentFileMap(map) {
   window.localStorage.setItem(LOCAL_COURSE_ASSIGNMENT_FILES_KEY, JSON.stringify(map));
+}
+
+function readLocalAssignmentRubricMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_COURSE_ASSIGNMENT_RUBRICS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalAssignmentRubricMap(map) {
+  window.localStorage.setItem(LOCAL_COURSE_ASSIGNMENT_RUBRICS_KEY, JSON.stringify(map));
 }
 
 function writeLocalTaskFileMap(map) {
@@ -1483,6 +1671,59 @@ function setAssignmentFileGroup(assignmentId, group) {
 
 function assignmentFilesForRole(fileRole) {
   return selectedAssignmentFileGroup.value[fileRole] ?? [];
+}
+
+function createEmptyAssignmentRubricState() {
+  return {
+    questions: [],
+    rubrics: [],
+    rubric_confirmed: false,
+    rubric_confirmed_at: null,
+  };
+}
+
+function getAssignmentRubricState(assignmentId) {
+  if (!assignmentId) return createEmptyAssignmentRubricState();
+  const assignment = courseAssignments.value.find((item) => item.id === assignmentId);
+  const localState = assignmentRubricMap.value[String(assignmentId)] ?? {};
+  return {
+    ...createEmptyAssignmentRubricState(),
+    ...localState,
+    questions: assignment?.questions?.length ? assignment.questions : localState.questions ?? [],
+    rubrics: assignment?.rubrics?.length ? assignment.rubrics : localState.rubrics ?? [],
+    rubric_confirmed: assignment?.rubric_confirmed ?? localState.rubric_confirmed ?? false,
+    rubric_confirmed_at: assignment?.rubric_confirmed_at ?? localState.rubric_confirmed_at ?? null,
+  };
+}
+
+function setAssignmentRubricState(assignmentId, state) {
+  if (!assignmentId) return;
+  const normalizedState = {
+    ...createEmptyAssignmentRubricState(),
+    ...state,
+    questions: state.questions ?? state.rubrics ?? [],
+    rubrics: state.rubrics ?? state.questions ?? [],
+    rubric_confirmed: Boolean(state.rubric_confirmed),
+  };
+  assignmentRubricMap.value = {
+    ...assignmentRubricMap.value,
+    [String(assignmentId)]: normalizedState,
+  };
+  writeLocalAssignmentRubricMap(assignmentRubricMap.value);
+  courseAssignments.value = courseAssignments.value.map((item) =>
+    item.id === assignmentId
+      ? {
+          ...item,
+          questions: normalizedState.questions,
+          rubrics: normalizedState.rubrics,
+          rubric_confirmed: normalizedState.rubric_confirmed,
+          rubric_confirmed_at: normalizedState.rubric_confirmed_at,
+        }
+      : item,
+  );
+  if (selectedCourseId.value) {
+    writeLocalAssignments(selectedCourseId.value, courseAssignments.value);
+  }
 }
 
 function getTaskFileGroup(taskId) {
@@ -1642,6 +1883,10 @@ function selectProgressStage(stageKey) {
   selectedProgressStageKey.value = stageKey;
 }
 
+function selectAssignmentRubricStage(stageKey) {
+  selectedAssignmentRubricStageKey.value = stageKey;
+}
+
 function editTask(task) {
   editingTaskId.value = task.id;
   Object.assign(form, {
@@ -1700,6 +1945,16 @@ async function deleteTask(task) {
     });
   } catch {
     return;
+  }
+  try {
+    await deleteTaskApi(task.id);
+  } catch (err) {
+    const status = err?.response?.status;
+    if (status !== 404) {
+      const detail = err?.response?.data?.detail;
+      ElMessage.error(typeof detail === "string" ? detail : "删除失败，请稍后重试");
+      return;
+    }
   }
   taskStore.deleteTask(task.id);
   if (selectedTaskId.value === task.id) {
@@ -1820,7 +2075,11 @@ async function selectCourseAssignment(assignment) {
   if (!selectedCourseId.value) return;
   courseAssignmentLayoutExpanded.value = true;
   selectedCourseAssignmentId.value = assignment.id;
-  await fetchCourseAssignmentFiles(selectedCourseId.value, assignment.id);
+  selectedAssignmentRubricStageKey.value = "";
+  await Promise.all([
+    fetchCourseAssignmentFiles(selectedCourseId.value, assignment.id),
+    fetchCourseAssignmentQuestions(selectedCourseId.value, assignment.id),
+  ]);
 }
 
 function clearCourseAssignmentSelection() {
@@ -1828,6 +2087,7 @@ function clearCourseAssignmentSelection() {
   if (selectedCourseAssignmentId.value) {
     selectedCourseAssignmentId.value = null;
   }
+  selectedAssignmentRubricStageKey.value = "";
 }
 
 async function submitAssignment() {
@@ -2106,6 +2366,21 @@ async function fetchCourseAssignmentFiles(courseId, assignmentId) {
   }
 }
 
+async function fetchCourseAssignmentQuestions(courseId, assignmentId) {
+  if (!courseId || !assignmentId) return;
+  try {
+    const result = await listCourseAssignmentQuestions(courseId, assignmentId);
+    setAssignmentRubricState(assignmentId, {
+      questions: result.questions ?? [],
+      rubrics: result.rubrics ?? result.questions ?? [],
+      rubric_confirmed: result.rubric_confirmed ?? false,
+      rubric_confirmed_at: result.rubric_confirmed_at ?? null,
+    });
+  } catch {
+    setAssignmentRubricState(assignmentId, getAssignmentRubricState(assignmentId));
+  }
+}
+
 async function parseSelectedAssignmentFiles() {
   if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
   parseAssignmentFilesLoading.value = true;
@@ -2117,6 +2392,84 @@ async function parseSelectedAssignmentFiles() {
     ElMessage.error(error?.response?.data?.detail ?? "作业材料解析失败，请检查上传文件");
   } finally {
     parseAssignmentFilesLoading.value = false;
+  }
+}
+
+async function runAssignmentQuestionAnalysis() {
+  if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  assignmentQuestionAnalysisLoading.value = true;
+  try {
+    const result = await analyzeCourseAssignmentQuestions(selectedCourseId.value, selectedCourseAssignmentId.value);
+    setAssignmentRubricState(selectedCourseAssignmentId.value, {
+      questions: result.questions ?? [],
+      rubrics: [],
+      rubric_confirmed: false,
+      rubric_confirmed_at: null,
+    });
+    selectedAssignmentRubricStageKey.value = "build_rubrics";
+    ElMessage.success(`题目分析完成，识别 ${result.question_count ?? result.questions?.length ?? 0} 道题`);
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail ?? "题目分析失败，请确认作业材料已解析且模型设置可用");
+  } finally {
+    assignmentQuestionAnalysisLoading.value = false;
+  }
+}
+
+async function runAssignmentRubricBuild() {
+  if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  assignmentRubricBuildLoading.value = true;
+  try {
+    const result = await buildCourseAssignmentRubrics(selectedCourseId.value, selectedCourseAssignmentId.value);
+    setAssignmentRubricState(selectedCourseAssignmentId.value, {
+      questions: result.questions ?? result.rubrics ?? [],
+      rubrics: result.rubrics ?? result.questions ?? [],
+      rubric_confirmed: false,
+      rubric_confirmed_at: null,
+    });
+    selectedAssignmentRubricStageKey.value = "teacher_confirm_rubrics";
+    ElMessage.success("评分量规已生成，请检查后确认");
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail ?? "量规生成失败，请先完成题目分析");
+  } finally {
+    assignmentRubricBuildLoading.value = false;
+  }
+}
+
+async function confirmSelectedAssignmentRubrics() {
+  if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  if (!selectedAssignmentHasRubrics.value) {
+    ElMessage.warning("请先生成评分量规");
+    return;
+  }
+  assignmentRubricConfirmLoading.value = true;
+  const confirmedAt = new Date().toISOString();
+  const payload = {
+    questions: selectedAssignmentQuestions.value,
+    rubric_confirmed: true,
+  };
+  setAssignmentRubricState(selectedCourseAssignmentId.value, {
+    questions: payload.questions,
+    rubrics: payload.questions,
+    rubric_confirmed: true,
+    rubric_confirmed_at: confirmedAt,
+  });
+  try {
+    const result = await confirmCourseAssignmentRubrics(
+      selectedCourseId.value,
+      selectedCourseAssignmentId.value,
+      payload,
+    );
+    setAssignmentRubricState(selectedCourseAssignmentId.value, {
+      questions: result.questions ?? payload.questions,
+      rubrics: result.rubrics ?? result.questions ?? payload.questions,
+      rubric_confirmed: result.rubric_confirmed ?? true,
+      rubric_confirmed_at: result.rubric_confirmed_at ?? confirmedAt,
+    });
+    ElMessage.success("评分量规已与该作业绑定，后续批改可直接复用");
+  } catch (error) {
+    ElMessage.warning(error?.response?.data?.detail ?? "量规已保存在本地，后端同步失败");
+  } finally {
+    assignmentRubricConfirmLoading.value = false;
   }
 }
 
@@ -2235,7 +2588,7 @@ async function parseSelectedTaskFiles() {
   try {
     const result = await taskStore.parseFiles(selectedTaskId.value);
     await fetchTaskFiles(selectedTaskId.value);
-    selectedProgressStageKey.value = "analyze_questions";
+    selectedProgressStageKey.value = "prepare_students";
     ElMessage.success(`文件解析完成，成功 ${result.parsed_count ?? 0} 个`);
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail ?? "文件解析失败，请检查上传材料");
@@ -2266,6 +2619,16 @@ async function runQuestionAnalysis() {
 function formatKnowledgePoints(points) {
   if (Array.isArray(points)) return points.join("、") || "未识别";
   return points || "未识别";
+}
+
+function difficultyMeta(difficulty) {
+  const metaMap = {
+    easy: { label: "简单", type: "success" },
+    medium: { label: "中等", type: "warning" },
+    hard: { label: "困难", type: "danger" },
+    unknown: { label: "未知", type: "info" },
+  };
+  return metaMap[difficulty] || { label: difficulty || "未知", type: "info" };
 }
 
 function mergeTaskFiles(primaryFiles, secondaryFiles) {

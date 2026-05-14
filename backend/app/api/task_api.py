@@ -36,6 +36,12 @@ def get_task(task_id: int) -> GradingTaskRead:
     return task
 
 
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(task_id: int) -> Response:
+    task_service.delete_task(task_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{task_id}/files", response_model=list[UploadedFileRead])
 def list_task_files(task_id: int) -> list[UploadedFileRead]:
     return file_service.list_task_files(task_id)

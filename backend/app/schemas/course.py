@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -49,8 +49,17 @@ class CourseAssignmentRead(CourseAssignmentBase):
     id: int
     course_id: int
     file_count: int = 0
+    questions: list[dict[str, Any]] = Field(default_factory=list)
+    rubrics: list[dict[str, Any]] = Field(default_factory=list)
+    rubric_confirmed: bool = False
+    rubric_confirmed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+
+
+class CourseAssignmentQuestionsUpdate(BaseModel):
+    questions: list[dict[str, Any]]
+    rubric_confirmed: bool = False
 
 
 class CourseAssignmentFileRead(BaseModel):

@@ -11,22 +11,12 @@ GradeTap 是一个面向高校与高职教师的 AI 作业批改助手。项目�
 
 ## 后端启动
 
-使用 conda：
+推荐使用 conda 管理环境（**Python 3.10+**，与 `requirements.txt` 中 `uvicorn>=0.30` 等依赖一致）：
 
 ```powershell
 cd backend
 conda create -n gradetap python=3.12
 conda activate gradetap
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-或使用本地 venv：
-
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```

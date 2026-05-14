@@ -196,6 +196,7 @@ body {
 }
 
 .view-panel {
+  height: 100%;
   min-height: 0;
 }
 
@@ -304,6 +305,20 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  height: 100%;
+  min-height: 0;
+}
+
+.class-workspace > .panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.class-workspace > .panel .task-table {
+  flex: 1;
+  min-height: 0;
 }
 
 .settings-workspace {
@@ -468,7 +483,17 @@ body {
 }
 
 .student-roster-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+}
+
+.student-roster-panel .task-table,
+.course-assignment-list-panel .task-table {
+  flex: 1;
+  min-height: 0;
 }
 
 .student-actions {
@@ -538,6 +563,10 @@ body {
   min-width: 0;
 }
 
+.course-assignment-list-panel {
+  overflow: hidden;
+}
+
 .course-assignment-material-panel {
   display: flex;
   flex-direction: column;
@@ -550,6 +579,14 @@ body {
 
 .course-assignment-heading {
   min-width: 0;
+}
+
+.assignment-heading-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .course-assignment-path {
@@ -603,6 +640,67 @@ body {
   opacity: 0;
   transform: translateX(16px);
   filter: blur(2px);
+}
+
+.assignment-workflow-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.assignment-process-header,
+.assignment-process-actions,
+.assignment-rubric-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assignment-process-header h3 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.assignment-process-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.assignment-question-table {
+  width: 100%;
+}
+
+.assignment-rubric-list {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 12px;
+  padding-bottom: 2px;
+}
+
+.assignment-rubric-item {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcff;
+}
+
+.assignment-rubric-title {
+  margin-bottom: 10px;
+}
+
+.assignment-rubric-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-panel {
@@ -858,6 +956,16 @@ body {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfa;
+  overflow: hidden;
+}
+
+.progress-stage-result {
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 .stage-detail-title {
@@ -986,6 +1094,18 @@ body {
   border-radius: 8px;
 }
 
+.parsed-preview-dialog .el-dialog__body {
+  max-height: calc(100dvh - 150px);
+  overflow: hidden;
+}
+
+.parsed-preview-dialog .el-textarea__inner {
+  max-height: calc(100dvh - 210px);
+  min-height: 520px;
+  overflow-y: auto;
+  line-height: 1.55;
+}
+
 @media (max-width: 960px) {
   .overview-band,
   .content-grid,
@@ -1004,6 +1124,16 @@ body {
   .progress-stages {
     grid-template-columns: repeat(var(--stage-count), minmax(72px, 1fr));
     overflow-x: auto;
+  }
+
+  .course-assignment-grid,
+  .course-assignment-grid--selected {
+    grid-template-columns: 1fr;
+  }
+
+  .assignment-heading-status {
+    min-width: 0;
+    flex-wrap: wrap;
   }
 
   .metric-item {

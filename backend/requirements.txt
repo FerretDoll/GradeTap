@@ -1,3 +1,4 @@
+# 依赖栈需要 Python 3.10+（例如 uvicorn>=0.30 使用 PEP 604 类型注解）
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.8.0
