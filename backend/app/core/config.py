@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     api_prefix: str = Field(default="/api", alias="API_PREFIX")
     backend_cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173",
+        default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
         alias="BACKEND_CORS_ORIGINS",
     )
     database_url: str = Field(default="sqlite:///./gradetap.db", alias="DATABASE_URL")

@@ -44,6 +44,41 @@ class Course(TimestampMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     assignment_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    assignments: Mapped[list["CourseAssignment"]] = relationship(
+        back_populates="course",
+        cascade="all, delete-orphan",
+    )
+
+
+class CourseAssignment(TimestampMixin, Base):
+    __tablename__ = "course_assignment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("course.id"), nullable=False)
+    assignment_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    total_score: Mapped[float] = mapped_column(Float, default=100, nullable=False)
+
+    course: Mapped[Course] = relationship(back_populates="assignments")
+    files: Mapped[list["CourseAssignmentFile"]] = relationship(
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+    )
+
+
+class CourseAssignmentFile(TimestampMixin, Base):
+    __tablename__ = "course_assignment_file"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    assignment_id: Mapped[int] = mapped_column(ForeignKey("course_assignment.id"), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_role: Mapped[FileRole] = mapped_column(Enum(FileRole, values_callable=enum_values), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    parsed_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    assignment: Mapped[CourseAssignment] = relationship(back_populates="files")
+
 
 class ClassGroup(TimestampMixin, Base):
     __tablename__ = "class"
@@ -68,6 +103,14 @@ class ClassStudent(TimestampMixin, Base):
     student_no: Mapped[str] = mapped_column(String(64), default="", nullable=False)
 
     class_group: Mapped[ClassGroup] = relationship(back_populates="students")
+
+
+class SystemSetting(TimestampMixin, Base):
+    __tablename__ = "system_setting"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    setting_key: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    setting_value: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
 
 
 class GradingTask(TimestampMixin, Base):

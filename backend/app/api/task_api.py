@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import Union
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 
+from app.models.file import FileRole
+from app.schemas.file import UploadedFileRead
 from app.schemas.grading import GradeByQuestionRequest, GradeByQuestionResponse
+from app.schemas.question import QuestionRead
 from app.schemas.task import GradingTaskCreate, GradingTaskRead
+from app.services.file_parse_service import file_parse_service
+from app.services.file_service import file_service
 from app.services.grading_service import grading_service
+from app.services.question_analyzer_service import question_analyzer_service
 from app.services.task_service import task_service
 
 router = APIRouter()
@@ -30,16 +36,40 @@ def get_task(task_id: int) -> GradingTaskRead:
     return task
 
 
+@router.get("/{task_id}/files", response_model=list[UploadedFileRead])
+def list_task_files(task_id: int) -> list[UploadedFileRead]:
+    return file_service.list_task_files(task_id)
+
+
+@router.post("/{task_id}/files", response_model=UploadedFileRead, status_code=status.HTTP_201_CREATED)
+async def upload_task_file(
+    task_id: int,
+    file_role: FileRole,
+    file: UploadFile = File(...),
+) -> UploadedFileRead:
+    return await file_service.upload_task_file(task_id, file_role, file)
+
+
+@router.delete("/{task_id}/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task_file(task_id: int, file_id: int) -> Response:
+    file_service.delete_task_file(task_id, file_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{task_id}/parse-files")
-def parse_files(task_id: int) -> dict[str, Union[str, int]]:
-    task_service.ensure_task_exists(task_id)
-    return {"task_id": task_id, "status": "queued", "stage": "parse_files"}
+def parse_files(task_id: int) -> dict:
+    return file_parse_service.parse_task_files(task_id)
 
 
 @router.post("/{task_id}/analyze-questions")
-def analyze_questions(task_id: int) -> dict[str, Union[str, int]]:
+def analyze_questions(task_id: int) -> dict:
     task_service.ensure_task_exists(task_id)
-    return {"task_id": task_id, "status": "queued", "stage": "analyze_questions"}
+    return question_analyzer_service.analyze_task_questions(task_id)
+
+
+@router.get("/{task_id}/questions", response_model=list[QuestionRead])
+def list_task_questions(task_id: int) -> list[QuestionRead]:
+    return question_analyzer_service.list_task_questions(task_id)
 
 
 @router.post("/{task_id}/build-rubrics")

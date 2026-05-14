@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-import { createTask, listTasks } from "../api/tasks";
+import { analyzeTaskQuestions, createTask, listTasks, parseTaskFiles } from "../api/tasks";
 
 const LOCAL_TASKS_KEY = "gradetap.tasks";
 
@@ -108,6 +108,38 @@ export const useTaskStore = defineStore("tasks", {
     deleteTask(taskId) {
       this.items = this.items.filter((task) => task.id !== taskId);
       writeLocalTasks(this.items);
+    },
+    async parseFiles(taskId) {
+      const result = await parseTaskFiles(taskId);
+      this.items = this.items.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              status: result.status ?? "parsed",
+              progress: Math.max(task.progress ?? 0, 18),
+              current_stage: "analyze_questions",
+              updated_at: new Date().toISOString(),
+            }
+          : task,
+      );
+      writeLocalTasks(this.items);
+      return result;
+    },
+    async analyzeQuestions(taskId) {
+      const result = await analyzeTaskQuestions(taskId);
+      this.items = this.items.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              status: result.status ?? "questions_analyzed",
+              progress: Math.max(task.progress ?? 0, 28),
+              current_stage: "build_rubrics",
+              updated_at: new Date().toISOString(),
+            }
+          : task,
+      );
+      writeLocalTasks(this.items);
+      return result;
     },
   },
 });

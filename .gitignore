@@ -23,6 +23,7 @@ storage/
 uploads/
 reports/
 *.log
+*.db
 
 # Editors
 .idea/
