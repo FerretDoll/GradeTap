@@ -14,11 +14,13 @@ from app.schemas.answer import (
     AnswerExtractionStartResponse,
     StudentPrepareResponse,
 )
+from app.schemas.evidence import EvidenceExtractionSnapshot
 from app.schemas.task import GradingTaskCreate, GradingTaskRead
 from app.services.file_parse_service import file_parse_service
 from app.services.file_service import file_service
 from app.services.grading_service import grading_service
 from app.services.answer_extractor_service import answer_extractor_service
+from app.services.evidence_extractor_service import evidence_extractor_service
 from app.services.progress_event_service import progress_event_service
 from app.services.question_analyzer_service import question_analyzer_service
 from app.services.student_prepare_service import student_prepare_service
@@ -121,10 +123,24 @@ def extract_answers(task_id: int, max_workers: int = 3, force: bool = False) -> 
     return answer_extractor_service.start_extract_answers(task_id, max_workers=max_workers, force=force)
 
 
-@router.post("/{task_id}/extract-evidence")
-def extract_evidence(task_id: int) -> dict[str, Union[str, int]]:
+@router.get("/{task_id}/extract-evidence", response_model=EvidenceExtractionSnapshot)
+def get_evidence_extraction(task_id: int) -> EvidenceExtractionSnapshot:
     task_service.ensure_task_exists(task_id)
-    return {"task_id": task_id, "status": "queued", "stage": "extract_evidence"}
+    return evidence_extractor_service.get_snapshot(task_id)
+
+
+@router.post("/{task_id}/extract-evidence")
+def extract_evidence(
+    task_id: int,
+    max_workers: int = 3,
+    force: bool = False,
+) -> dict[str, Union[str, int, bool]]:
+    task_service.ensure_task_exists(task_id)
+    return evidence_extractor_service.start_extract_evidence(
+        task_id,
+        max_workers=max_workers,
+        force=force,
+    )
 
 
 @router.post("/{task_id}/grade-by-question", response_model=GradeByQuestionResponse)

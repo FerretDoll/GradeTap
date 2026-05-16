@@ -36,3 +36,29 @@ class AnswerEvidenceBatchRead(BaseModel):
     question_id: int
     student_answer_id: int
     evidence_items: list[AnswerEvidenceRead] = Field(default_factory=list)
+
+
+class EvidenceExtractionQuestionRead(BaseModel):
+    question_id: int
+    student_answer_id: int
+    answer_text: str = ""
+    extraction_status: str = ""
+    answer_confidence: float = Field(default=0, ge=0, le=1)
+    evidence_items: list[AnswerEvidenceRead] = Field(default_factory=list)
+
+
+class StudentEvidenceExtractionProgress(BaseModel):
+    submission_id: int
+    student_name: str
+    student_no: str = ""
+    status: str = "pending"
+    questions: list[EvidenceExtractionQuestionRead] = Field(default_factory=list)
+
+
+class EvidenceExtractionSnapshot(BaseModel):
+    task_id: int
+    status: str
+    stage: str = "extract_evidence"
+    total_answers: int
+    completed_answers: int
+    students: list[StudentEvidenceExtractionProgress] = Field(default_factory=list)

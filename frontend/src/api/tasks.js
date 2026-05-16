@@ -68,3 +68,16 @@ export async function startTaskAnswerExtraction(taskId, maxWorkers = 3, force = 
   });
   return response.data;
 }
+
+export async function getTaskEvidenceExtraction(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/extract-evidence`);
+  return response.data;
+}
+
+export async function startTaskEvidenceExtraction(taskId, maxWorkers = 3, force = false) {
+  const response = await apiClient.post(`/tasks/${taskId}/extract-evidence`, null, {
+    params: { max_workers: maxWorkers, force },
+    timeout: LONG_RUNNING_TASK_TIMEOUT,
+  });
+  return response.data;
+}

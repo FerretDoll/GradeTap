@@ -217,6 +217,7 @@
                       'progress-stage-detail--analysis': activeProgressStage.key === 'analyze_questions',
                       'progress-stage-detail--student-parse': activeProgressStage.key === 'prepare_students',
                       'progress-stage-detail--answer-extract': activeProgressStage.key === 'extract_answers',
+                      'progress-stage-detail--evidence-extract': activeProgressStage.key === 'extract_evidence',
                     }"
                   >
                     <div class="stage-detail-title">
@@ -227,6 +228,10 @@
                       <div v-else-if="activeProgressStage.key === 'extract_answers'">
                         <span class="section-kicker">Answer Extract</span>
                         <h3>{{ answerExtractionCompletedCount }}/{{ answerExtractionEligibleCount }} 名学生已抽取</h3>
+                      </div>
+                      <div v-else-if="activeProgressStage.key === 'extract_evidence'">
+                        <span class="section-kicker">Evidence Extract</span>
+                        <h3>{{ evidenceExtractionCompletedCount }}/{{ evidenceExtractionEligibleCount }} 名学生已提取证据</h3>
                       </div>
                       <div v-else-if="activeProgressStage.key === 'analyze_questions'">
                         <span class="section-kicker">{{ activeProgressStage.eyebrow }}</span>
@@ -239,6 +244,9 @@
                         </el-tag>
                         <el-tag v-if="activeProgressStage.key === 'extract_answers'" effect="plain">
                           {{ taskQuestions.length }} 道题
+                        </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'extract_evidence'" effect="plain">
+                          {{ evidenceLowConfidenceCount }} 个低置信度维度
                         </el-tag>
                         <template v-if="activeProgressStage.key === 'analyze_questions'">
                           <el-button
@@ -280,6 +288,32 @@
                           >
                             重新抽取答案
                           </el-button>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'extract_evidence'">
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :disabled="!answerExtractionHasAnswers"
+                            :loading="evidenceExtractionLoading"
+                            @click="runEvidenceExtraction(false)"
+                          >
+                            {{ evidenceExtractionHasEvidence ? "继续提取证据" : "开始证据提取" }}
+                          </el-button>
+                          <el-button
+                            v-if="evidenceExtractionHasEvidence"
+                            size="small"
+                            type="warning"
+                            :disabled="!answerExtractionHasAnswers"
+                            :loading="evidenceExtractionLoading"
+                            @click="runEvidenceExtraction(true)"
+                          >
+                            重新提取证据
+                          </el-button>
+                          <el-switch
+                            v-model="evidenceLowConfidenceOnly"
+                            size="small"
+                            active-text="只看低置信度"
+                          />
                         </template>
                       </div>
                     </div>
@@ -390,7 +424,9 @@
                             </div>
                             <div v-if="studentAnswerExtractionFinalized(student)" class="answer-student-counts">
                               <span class="matched">已匹配 {{ studentAnswerCounts(student).matched }} 题</span>
-                              <span class="unmatched">未匹配 {{ studentAnswerCounts(student).unmatched }} 题</span>
+                              <span v-if="studentAnswerCounts(student).unmatched > 0" class="unmatched">
+                                未匹配 {{ studentAnswerCounts(student).unmatched }} 题
+                              </span>
                             </div>
                             <el-progress
                               :percentage="studentAnswerProgress(student)"
@@ -468,6 +504,139 @@
                         v-else
                         class="student-parse-empty"
                         description="只有学生解析中已匹配作业的学生才能进入答案抽取"
+                        :image-size="72"
+                      />
+                    </div>
+                    <div v-else-if="activeProgressStage.key === 'extract_evidence'" class="evidence-extract-panel">
+                      <div v-if="evidenceExtractionEligibleCount" class="evidence-extract-grid">
+                        <div class="evidence-student-list">
+                          <button
+                            v-for="student in evidenceExtractionStudents"
+                            :key="student.submission_id"
+                            type="button"
+                            class="evidence-student-card"
+                            :class="{
+                              active: student.submission_id === selectedEvidenceSubmissionId,
+                              done: studentEvidenceCompleted(student),
+                              review: studentEvidenceLowConfidenceCount(student) > 0,
+                              running: studentEvidenceRunning(student),
+                            }"
+                            @click="selectEvidenceStudent(student.submission_id)"
+                          >
+                            <div class="evidence-student-card-head">
+                              <div>
+                                <strong>{{ student.student_name }}</strong>
+                                <span>{{ student.student_no || "未填写学号" }}</span>
+                              </div>
+                              <el-tag
+                                :type="studentEvidenceLowConfidenceCount(student) ? 'warning' : 'success'"
+                                effect="light"
+                              >
+                                {{ studentEvidenceLowConfidenceCount(student) ? "需关注" : "稳定" }}
+                              </el-tag>
+                            </div>
+                            <div class="evidence-student-counts">
+                              <span>已提取 {{ studentEvidenceCompletedQuestionCount(student) }} 题</span>
+                              <span>低置信度 {{ studentEvidenceLowConfidenceCount(student) }}</span>
+                            </div>
+                            <el-progress
+                              :percentage="studentEvidenceProgress(student)"
+                              :stroke-width="6"
+                              :show-text="false"
+                              :class="{ 'progress-bar--running': student.status === 'processing' }"
+                            />
+                            <small>{{ studentEvidenceCompletedQuestionCount(student) }}/{{ taskQuestions.length }} 题</small>
+                          </button>
+                        </div>
+
+                        <div class="evidence-question-view">
+                          <div class="answer-column-heading">
+                            <strong>题目与学生答案</strong>
+                            <el-tag effect="plain">{{ filteredEvidenceQuestions.length }} 题</el-tag>
+                          </div>
+                          <div class="evidence-question-list">
+                            <article
+                              v-for="questionItem in filteredEvidenceQuestions"
+                              :key="questionItem.question_id"
+                              class="evidence-question-card"
+                              :class="{
+                                active: questionItem.question_id === selectedEvidenceQuestionId,
+                                warning: questionEvidenceLowConfidenceCount(questionItem) > 0,
+                              }"
+                              @click="selectEvidenceQuestion(questionItem.question_id)"
+                            >
+                              <div class="evidence-question-card-head">
+                                <strong>{{ questionLabel(questionItem.question_id) }}</strong>
+                                <el-tag :type="answerStatusMeta(questionItem.extraction_status).type" effect="light">
+                                  {{ answerStatusMeta(questionItem.extraction_status).label }}
+                                </el-tag>
+                              </div>
+                              <p>{{ questionItem.answer_text || "未抽取到学生答案，后续评分应进入复核。" }}</p>
+                              <div class="evidence-question-meta">
+                                <span>答案置信度 {{ formatPercent(questionItem.answer_confidence) }}</span>
+                                <span>低置信度 {{ questionEvidenceLowConfidenceCount(questionItem) }}</span>
+                              </div>
+                            </article>
+                          </div>
+                        </div>
+
+                        <div class="evidence-detail-view">
+                          <div class="answer-column-heading">
+                            <strong>{{ selectedEvidenceQuestionTitle }}</strong>
+                            <el-tag effect="plain">{{ selectedEvidenceDimensionRows.length }} 个维度</el-tag>
+                          </div>
+                          <div v-if="selectedEvidenceQuestion" class="evidence-detail-body">
+                            <article
+                              v-for="row in selectedEvidenceDimensionRows"
+                              :key="row.rubric.id"
+                              class="evidence-dimension-card"
+                              :class="{
+                                warning: row.confidence < 0.8,
+                                skipped: row.skipped,
+                                empty: !row.hasEvidence && !row.skipped,
+                              }"
+                            >
+                              <div class="evidence-dimension-head">
+                                <div>
+                                  <strong>{{ row.rubric.dimension_name }}</strong>
+                                  <span>{{ row.rubric.max_score }} 分 · {{ row.rubric.evidence_requirement }}</span>
+                                </div>
+                                <el-tag :type="evidenceConfidenceMeta(row.confidence, row.skipped).type" effect="light">
+                                  {{ evidenceConfidenceMeta(row.confidence, row.skipped).label }}
+                                </el-tag>
+                              </div>
+                              <div class="evidence-pill-grid">
+                                <div>
+                                  <span>正向证据</span>
+                                  <ul v-if="row.positive_evidence.length">
+                                    <li v-for="item in row.positive_evidence" :key="item">{{ item }}</li>
+                                  </ul>
+                                  <p v-else-if="row.skipped">缺失答案，无需提取</p>
+                                  <p v-else>暂无正向证据</p>
+                                </div>
+                                <div>
+                                  <span>负向证据</span>
+                                  <ul v-if="row.negative_evidence.length">
+                                    <li v-for="item in row.negative_evidence" :key="item">{{ item }}</li>
+                                  </ul>
+                                  <p v-else-if="row.skipped">缺失答案，无需提取</p>
+                                  <p v-else>暂无负向证据</p>
+                                </div>
+                              </div>
+                            </article>
+                          </div>
+                          <el-empty
+                            v-else
+                            class="student-parse-empty"
+                            description="请选择需要查看证据的题目"
+                            :image-size="72"
+                          />
+                        </div>
+                      </div>
+                      <el-empty
+                        v-else
+                        class="student-parse-empty"
+                        description="请先完成答案抽取，再进入证据提取"
                         :image-size="72"
                       />
                     </div>
@@ -1416,10 +1585,12 @@ import {
   deleteTask as deleteTaskApi,
   deleteTaskFile,
   getTaskAnswerExtraction,
+  getTaskEvidenceExtraction,
   listTaskQuestions,
   listTaskFiles,
   prepareTaskStudents,
   startTaskAnswerExtraction,
+  startTaskEvidenceExtraction,
   uploadTaskFile,
 } from "./api/tasks";
 import {
@@ -1466,6 +1637,7 @@ const assignmentFileDeletingId = ref(null);
 const parseFilesLoading = ref(false);
 const studentPrepareLoading = ref(false);
 const answerExtractionLoading = ref(false);
+const evidenceExtractionLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
 const assignmentQuestionAnalysisLoading = ref(false);
@@ -1536,9 +1708,14 @@ const classStudents = ref([]);
 const taskClassStudents = ref([]);
 const taskQuestions = ref([]);
 const taskAnswerExtraction = ref(null);
+const taskEvidenceExtraction = ref(null);
 const selectedAnswerSubmissionId = ref(null);
 const hoveredAnswerQuestionId = ref(null);
 const answerInteractionArea = ref(null);
+const selectedEvidenceSubmissionId = ref(null);
+const selectedEvidenceQuestionId = ref(null);
+const evidenceLowConfidenceOnly = ref(false);
+const activeEvidenceSubmissionIds = ref(new Set());
 const activeEventSources = new Set();
 const taskLlmStream = reactive({
   stage: "",
@@ -1645,6 +1822,69 @@ const highlightedSubmissionParts = computed(() =>
   ),
 );
 const activeAnswerQuestionId = computed(() => hoveredAnswerQuestionId.value);
+const evidenceExtractionStudents = computed(() => {
+  const snapshotStudents = taskEvidenceExtraction.value?.students ?? [];
+  if (snapshotStudents.length) {
+    return snapshotStudents.filter((student) => studentEvidenceEligible(student));
+  }
+  return buildPreviewEvidenceExtractionStudents();
+});
+const evidenceExtractionEligibleCount = computed(() => evidenceExtractionStudents.value.length);
+const evidenceExtractionCompletedCount = computed(
+  () => evidenceExtractionStudents.value.filter((student) => studentEvidenceCompleted(student)).length,
+);
+const evidenceExtractionHasEvidence = computed(() =>
+  evidenceExtractionStudents.value.some((student) =>
+    (student.questions ?? []).some((question) => (question.evidence_items ?? []).length > 0),
+  ),
+);
+const evidenceLowConfidenceCount = computed(() =>
+  evidenceExtractionStudents.value.reduce(
+    (sum, student) => sum + studentEvidenceLowConfidenceCount(student),
+    0,
+  ),
+);
+const selectedEvidenceStudent = computed(() => {
+  if (!evidenceExtractionStudents.value.length) return null;
+  return (
+    evidenceExtractionStudents.value.find((student) => student.submission_id === selectedEvidenceSubmissionId.value)
+    ?? evidenceExtractionStudents.value[0]
+  );
+});
+const selectedEvidenceQuestions = computed(() => selectedEvidenceStudent.value?.questions ?? []);
+const filteredEvidenceQuestions = computed(() => {
+  if (!evidenceLowConfidenceOnly.value) return selectedEvidenceQuestions.value;
+  return selectedEvidenceQuestions.value.filter((question) => questionEvidenceLowConfidenceCount(question) > 0);
+});
+const selectedEvidenceQuestion = computed(() => {
+  if (!filteredEvidenceQuestions.value.length) return null;
+  return (
+    filteredEvidenceQuestions.value.find((question) => question.question_id === selectedEvidenceQuestionId.value)
+    ?? filteredEvidenceQuestions.value[0]
+  );
+});
+const selectedEvidenceQuestionTitle = computed(() =>
+  selectedEvidenceQuestion.value ? questionLabel(selectedEvidenceQuestion.value.question_id) : "评分证据",
+);
+const selectedEvidenceQuestionRubrics = computed(() =>
+  taskQuestions.value.find((question) => question.id === selectedEvidenceQuestion.value?.question_id)?.rubrics ?? [],
+);
+const selectedEvidenceDimensionRows = computed(() =>
+  selectedEvidenceQuestionRubrics.value.map((rubric) => {
+    const evidence = evidenceForRubric(selectedEvidenceQuestion.value, rubric.id);
+    const positiveEvidence = evidence?.positive_evidence ?? [];
+    const negativeEvidence = evidence?.negative_evidence ?? [];
+    const skipped = evidenceQuestionSkipsExtraction(selectedEvidenceQuestion.value);
+    return {
+      rubric,
+      positive_evidence: positiveEvidence,
+      negative_evidence: negativeEvidence,
+      confidence: Number(evidence?.confidence ?? 0),
+      hasEvidence: positiveEvidence.length > 0 || negativeEvidence.length > 0,
+      skipped,
+    };
+  }),
+);
 const llmProviders = [
   {
     label: "DeepSeek",
@@ -2374,10 +2614,14 @@ function openTaskDetail(task) {
   fetchTaskQuestions(task.id);
   fetchTaskClassStudents(task);
   fetchTaskAnswerExtraction(task.id);
+  fetchTaskEvidenceExtraction(task.id);
 }
 
 function selectProgressStage(stageKey) {
   selectedProgressStageKey.value = stageKey;
+  if (stageKey === "extract_evidence") {
+    ensureEvidenceSelection();
+  }
 }
 
 function selectAssignmentRubricStage(stageKey) {
@@ -2999,6 +3243,7 @@ function openAnswerExtractionEventStream(url) {
     if (data.stage !== "extract_answers") return;
     await fetchTaskQuestions(selectedTaskId.value);
     await fetchTaskAnswerExtraction(selectedTaskId.value);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
     taskStore.updateTask(selectedTaskId.value, {
       status: "answers_extracted",
       current_stage: "extract_evidence",
@@ -3017,6 +3262,87 @@ function openAnswerExtractionEventStream(url) {
   });
   eventSource.onerror = () => {
     if (answerExtractionLoading.value) return;
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
+function openEvidenceExtractionEventStream(url) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+
+  eventSource.addEventListener("stage_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    evidenceExtractionLoading.value = true;
+    activeEvidenceSubmissionIds.value = new Set();
+    selectedProgressStageKey.value = "extract_evidence";
+    taskEvidenceExtraction.value = {
+      ...(taskEvidenceExtraction.value ?? buildInitialEvidenceSnapshot("queued")),
+      status: "processing",
+      total_answers: data.total_answers ?? taskEvidenceExtraction.value?.total_answers ?? 0,
+      completed_answers: data.completed_answers ?? taskEvidenceExtraction.value?.completed_answers ?? 0,
+    };
+  });
+  eventSource.addEventListener("answer_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (data.submission_id != null) {
+      activeEvidenceSubmissionIds.value = new Set([
+        ...activeEvidenceSubmissionIds.value,
+        data.submission_id,
+      ]);
+    }
+    updateEvidenceQuestionRuntime(data, "processing");
+  });
+  eventSource.addEventListener("answer_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    updateEvidenceQuestionRuntime(data, "done");
+    await fetchTaskQuestions(selectedTaskId.value);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+  });
+  eventSource.addEventListener("answer_failed", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    updateEvidenceQuestionRuntime(data, "failed");
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+  });
+  eventSource.addEventListener("answer_progress", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    taskEvidenceExtraction.value = {
+      ...(taskEvidenceExtraction.value ?? buildInitialEvidenceSnapshot("queued")),
+      status: "processing",
+      total_answers: data.total_answers ?? taskEvidenceExtraction.value?.total_answers ?? 0,
+      completed_answers: data.completed_answers ?? taskEvidenceExtraction.value?.completed_answers ?? 0,
+    };
+  });
+  eventSource.addEventListener("stage_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    await fetchTaskQuestions(selectedTaskId.value);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "evidence_extracted",
+      current_stage: "grade_by_question",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 68),
+    });
+    evidenceExtractionLoading.value = false;
+    activeEvidenceSubmissionIds.value = new Set();
+    closeLlmEventStream(eventSource);
+    ElMessage.success("证据提取完成");
+  });
+  eventSource.addEventListener("stage_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    evidenceExtractionLoading.value = false;
+    activeEvidenceSubmissionIds.value = new Set();
+    closeLlmEventStream(eventSource);
+    ElMessage.error(data.message || "证据提取失败");
+  });
+  eventSource.onerror = () => {
+    if (evidenceExtractionLoading.value) return;
     closeLlmEventStream(eventSource);
   };
   return eventSource;
@@ -3301,6 +3627,22 @@ async function fetchTaskAnswerExtraction(taskId) {
   }
 }
 
+async function fetchTaskEvidenceExtraction(taskId) {
+  if (!taskId) {
+    taskEvidenceExtraction.value = null;
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
+    return;
+  }
+  try {
+    const snapshot = await getTaskEvidenceExtraction(taskId);
+    taskEvidenceExtraction.value = snapshot;
+  } catch {
+    taskEvidenceExtraction.value = null;
+  }
+  ensureEvidenceSelection();
+}
+
 async function parseSelectedTaskFiles() {
   if (!selectedTaskId.value) return;
   if (taskQuestions.value.length || selectedTask.value?.status !== "created") {
@@ -3319,7 +3661,10 @@ async function parseSelectedTaskFiles() {
     taskQuestions.value = [];
     clearTaskStudentMatches(selectedTaskId.value);
     taskAnswerExtraction.value = null;
+    taskEvidenceExtraction.value = null;
     selectedAnswerSubmissionId.value = null;
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
     selectedProgressStageKey.value = "prepare_students";
     ElMessage.success(`文件解析完成，成功 ${result.parsed_count ?? 0} 个`);
   } catch (error) {
@@ -3348,7 +3693,10 @@ async function runStudentPrepare() {
     const result = await prepareTaskStudents(selectedTaskId.value);
     setTaskStudentMatches(selectedTaskId.value, result.matches ?? []);
     taskAnswerExtraction.value = null;
+    taskEvidenceExtraction.value = null;
     selectedAnswerSubmissionId.value = null;
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
       status: result.status ?? "students_prepared",
       current_stage: "extract_answers",
@@ -3362,7 +3710,10 @@ async function runStudentPrepare() {
     );
     setTaskStudentMatches(selectedTaskId.value, localMatches);
     taskAnswerExtraction.value = null;
+    taskEvidenceExtraction.value = null;
     selectedAnswerSubmissionId.value = null;
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
       status: "students_prepared",
       current_stage: "extract_answers",
@@ -3416,6 +3767,11 @@ async function runAnswerExtraction(force = false) {
         : answerExtractionStudents.value,
     };
     selectedAnswerSubmissionId.value = taskAnswerExtraction.value.students[0]?.submission_id ?? null;
+    if (force) {
+      taskEvidenceExtraction.value = null;
+      selectedEvidenceSubmissionId.value = null;
+      selectedEvidenceQuestionId.value = null;
+    }
     selectedProgressStageKey.value = "extract_answers";
     taskStore.updateTask(selectedTaskId.value, {
       current_stage: "extract_answers",
@@ -3425,6 +3781,43 @@ async function runAnswerExtraction(force = false) {
     answerExtractionLoading.value = false;
     closeLlmEventStream(eventSource);
     ElMessage.error(error?.response?.data?.detail ?? "答案抽取启动失败，请确认前一步已有匹配成功的学生作业");
+  }
+}
+
+async function runEvidenceExtraction(force = false) {
+  if (!selectedTaskId.value) return;
+  if (!answerExtractionHasAnswers.value) {
+    ElMessage.warning("请先完成答案抽取，再提取评分证据");
+    return;
+  }
+  if (force && evidenceExtractionHasEvidence.value) {
+    const confirmed = await confirmRestartStep({
+      title: "重新提取证据",
+      message: "重新提取会替换当前评分证据，并清空后续 AI评分、反思校准和教师复核记录。",
+      confirmText: "确认重新提取",
+    });
+    if (!confirmed) return;
+  }
+
+  evidenceExtractionLoading.value = true;
+  const eventSource = openEvidenceExtractionEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+  );
+  try {
+    const started = await startTaskEvidenceExtraction(selectedTaskId.value, 3, force);
+    markEvidenceExtractionStarted(started);
+    selectedProgressStageKey.value = "extract_evidence";
+    taskStore.updateTask(selectedTaskId.value, {
+      status: selectedTask.value?.status ?? "answers_extracted",
+      current_stage: "extract_evidence",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 62),
+    });
+    ensureEvidenceSelection();
+    ElMessage.success("证据提取已开始");
+  } catch (error) {
+    evidenceExtractionLoading.value = false;
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "证据提取启动失败，请确认已完成答案抽取和量规生成");
   }
 }
 
@@ -3736,6 +4129,195 @@ function answerQuestionFinalized(questionId) {
   return Boolean(studentAnswerExtractionFinalized(selectedAnswerStudent.value) && answerForQuestion(questionId));
 }
 
+function buildPreviewEvidenceExtractionStudents() {
+  return answerExtractionStudents.value
+    .filter((student) => studentEvidenceEligible(student))
+    .map((student) => ({
+      submission_id: student.submission_id,
+      student_name: student.student_name,
+      student_no: student.student_no,
+      source_file_id: student.source_file_id,
+      source_file_name: student.source_file_name,
+      status: student.status === "done" ? "pending" : student.status,
+      questions: (student.answers ?? []).map((answer) => ({
+        question_id: answer.question_id,
+        student_answer_id: answer.id,
+        answer_text: answer.answer_text ?? "",
+        extraction_status: answer.extraction_status,
+        answer_confidence: answer.confidence ?? 0,
+        evidence_items: [],
+      })),
+    }));
+}
+
+function studentEvidenceEligible(student) {
+  const total = Number(student?.total_questions || taskQuestions.value.length || 0);
+  const answers = student?.answers ?? student?.questions ?? [];
+  if (!total || answers.length < total) return false;
+  return true;
+}
+
+function buildInitialEvidenceSnapshot(status = "queued") {
+  const isCompleted = status === "done" || status === "evidence_extracted";
+  const students = buildPreviewEvidenceExtractionStudents().map((student) => ({
+    ...student,
+    status: isCompleted ? "done" : "pending",
+  }));
+  const totalAnswers = students.reduce((sum, student) => sum + (student.questions ?? []).length, 0);
+  return {
+    task_id: selectedTaskId.value,
+    status,
+    stage: "extract_evidence",
+    total_answers: totalAnswers,
+    completed_answers: isCompleted ? totalAnswers : 0,
+    students,
+  };
+}
+
+function markEvidenceExtractionStarted(started = {}) {
+  const currentSnapshot = taskEvidenceExtraction.value;
+  const nextSnapshot = currentSnapshot?.students?.length
+    ? currentSnapshot
+    : buildInitialEvidenceSnapshot(started.status ?? "queued");
+  taskEvidenceExtraction.value = {
+    ...nextSnapshot,
+    status: "processing",
+    stage: "extract_evidence",
+    total_answers: started.total_answers ?? nextSnapshot.total_answers ?? 0,
+    completed_answers: started.completed_answers ?? nextSnapshot.completed_answers ?? 0,
+    students: (nextSnapshot.students ?? []).map((student) => ({
+      ...student,
+      status: student.status === "done" ? "done" : "pending",
+    })),
+  };
+}
+
+function ensureEvidenceSelection() {
+  const firstStudent = evidenceExtractionStudents.value[0];
+  if (!firstStudent) {
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
+    return;
+  }
+  if (!evidenceExtractionStudents.value.some((student) => student.submission_id === selectedEvidenceSubmissionId.value)) {
+    selectedEvidenceSubmissionId.value = firstStudent.submission_id;
+  }
+  const firstQuestion = selectedEvidenceQuestions.value[0];
+  if (!firstQuestion) {
+    selectedEvidenceQuestionId.value = null;
+    return;
+  }
+  if (!selectedEvidenceQuestions.value.some((question) => question.question_id === selectedEvidenceQuestionId.value)) {
+    selectedEvidenceQuestionId.value = firstQuestion.question_id;
+  }
+}
+
+function updateEvidenceQuestionRuntime(data, status) {
+  const baseSnapshot = taskEvidenceExtraction.value ?? buildInitialEvidenceSnapshot("queued");
+  const nextStudents = (baseSnapshot.students ?? []).map((student) => {
+    if (String(student.submission_id) !== String(data.submission_id)) return student;
+    return {
+      ...student,
+      status: status === "processing" ? "processing" : student.status,
+      questions: (student.questions ?? []).map((question) => {
+        const sameAnswer = String(question.student_answer_id) === String(data.student_answer_id);
+        const sameQuestion = String(question.question_id) === String(data.question_id);
+        if (!sameAnswer && !sameQuestion) return question;
+        return {
+          ...question,
+          processing_status: status,
+        };
+      }),
+    };
+  });
+  taskEvidenceExtraction.value = {
+    ...baseSnapshot,
+    status: "processing",
+    students: nextStudents,
+  };
+  ensureEvidenceSelection();
+}
+
+function selectEvidenceStudent(submissionId) {
+  selectedEvidenceSubmissionId.value = submissionId;
+  selectedEvidenceQuestionId.value = selectedEvidenceQuestions.value[0]?.question_id ?? null;
+}
+
+function selectEvidenceQuestion(questionId) {
+  selectedEvidenceQuestionId.value = questionId;
+}
+
+function questionLabel(questionId) {
+  const question = taskQuestions.value.find((item) => item.id === questionId);
+  if (!question) return `题目 ${questionId}`;
+  return `${question.question_number}. ${question.content}`;
+}
+
+function evidenceForRubric(question, rubricId) {
+  return (question?.evidence_items ?? []).find((item) => item.rubric_id === rubricId) ?? null;
+}
+
+function studentEvidenceCompleted(student) {
+  if (student?.status === "done") return true;
+  const questions = student?.questions ?? [];
+  return Boolean(
+    questions.length
+    && questions.every((question) =>
+      (question.evidence_items ?? []).length > 0
+      || evidenceQuestionSkipsExtraction(question)
+      || question.processing_status === "done"
+      || question.processing_status === "failed",
+    ),
+  );
+}
+
+function studentEvidenceCompletedQuestionCount(student) {
+  return (student?.questions ?? []).filter((question) =>
+    (question.evidence_items ?? []).length > 0
+    || evidenceQuestionSkipsExtraction(question)
+    || question.processing_status === "done"
+    || question.processing_status === "failed",
+  ).length;
+}
+
+function studentEvidenceRunning(student) {
+  return activeEvidenceSubmissionIds.value.has(student?.submission_id);
+}
+
+function studentEvidenceLowConfidenceCount(student) {
+  return (student?.questions ?? []).reduce(
+    (sum, question) => sum + questionEvidenceLowConfidenceCount(question),
+    0,
+  );
+}
+
+function studentEvidenceProgress(student) {
+  const total = Number(taskQuestions.value.length || student?.questions?.length || 0);
+  if (!total) return 0;
+  return Math.min(100, Math.round((studentEvidenceCompletedQuestionCount(student) / total) * 100));
+}
+
+function questionEvidenceLowConfidenceCount(question) {
+  return (question?.evidence_items ?? []).filter((item) => Number(item.confidence ?? 0) < 0.8).length;
+}
+
+function evidenceQuestionSkipsExtraction(question) {
+  return question?.extraction_status === "missing" || !String(question?.answer_text ?? "").trim();
+}
+
+function evidenceConfidenceMeta(confidence, skipped = false) {
+  if (skipped) return { label: "无需提取", type: "info" };
+  if (confidence >= 0.9) return { label: `${formatPercent(confidence)} 高`, type: "success" };
+  if (confidence >= 0.8) return { label: `${formatPercent(confidence)} 可用`, type: "primary" };
+  if (confidence > 0) return { label: `${formatPercent(confidence)} 需复核`, type: "warning" };
+  return { label: "待提取", type: "info" };
+}
+
+function formatPercent(value) {
+  const normalized = Number(value ?? 0);
+  return `${Math.round(Math.max(0, Math.min(1, normalized)) * 100)}%`;
+}
+
 function answerStudentKey(student) {
   if (student?.source_file_id) return `file:${student.source_file_id}`;
   if (student?.student_no) return `no:${student.student_no}`;
@@ -3841,11 +4423,11 @@ function buildHighlightedSubmissionParts(student, answers) {
   answers.forEach((answer) => {
     const answerText = String(answer.answer_text ?? "").trim();
     if (!answerText) return;
-    const index = content.indexOf(answerText);
-    if (index < 0) return;
+    const range = findAnswerTextRange(content, answerText);
+    if (!range) return;
     ranges.push({
-      start: index,
-      end: index + answerText.length,
+      start: range.start,
+      end: range.end,
       questionId: answer.question_id,
       streaming: false,
     });
@@ -3870,6 +4452,37 @@ function buildHighlightedSubmissionParts(student, answers) {
     parts.push({ key: `text-tail-${cursor}`, text: content.slice(cursor), questionId: null });
   }
   return parts.length ? parts : [{ key: "all", text: content, questionId: null }];
+}
+
+function findAnswerTextRange(content, answerText) {
+  const exactIndex = content.indexOf(answerText);
+  if (exactIndex >= 0) {
+    return { start: exactIndex, end: exactIndex + answerText.length };
+  }
+
+  const normalizedNeedle = normalizeTextForRangeMatch(answerText);
+  if (!normalizedNeedle) return null;
+
+  let normalizedContent = "";
+  const indexMap = [];
+  Array.from(content).forEach((char, originalIndex) => {
+    if (/\s/.test(char)) return;
+    normalizedContent += char;
+    indexMap.push(originalIndex);
+  });
+
+  const normalizedIndex = normalizedContent.indexOf(normalizedNeedle);
+  if (normalizedIndex < 0) return null;
+
+  const start = indexMap[normalizedIndex];
+  const end = indexMap[normalizedIndex + normalizedNeedle.length - 1] + 1;
+  return { start, end };
+}
+
+function normalizeTextForRangeMatch(value) {
+  return Array.from(String(value ?? ""))
+    .filter((char) => !/\s/.test(char))
+    .join("");
 }
 
 async function handleTaskMaterialChange(material, uploadFile) {

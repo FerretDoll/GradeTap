@@ -29,7 +29,7 @@ from app.prompts.question_analyzer_prompt import (
     QUESTION_ANALYZER_OUTPUT_SCHEMA,
     build_question_analyzer_prompt,
 )
-from app.schemas.question import QuestionCreate, QuestionRead
+from app.schemas.question import QuestionCreate, QuestionRead, QuestionRubricRead
 from app.services.llm_service import LLMService, llm_service
 from app.services.progress_event_service import progress_event_service
 
@@ -170,7 +170,22 @@ class QuestionAnalyzerService:
             expected_answer_type=question.expected_answer_type,
             total_score=question.total_score,
             sort_order=question.sort_order,
-            rubrics=[],
+            rubrics=[
+                QuestionRubricRead(
+                    id=rubric.id,
+                    question_id=rubric.question_id,
+                    dimension_name=rubric.dimension_name,
+                    dimension_description=rubric.dimension_description,
+                    max_score=rubric.max_score,
+                    scoring_criteria=rubric.scoring_criteria,
+                    deduction_criteria=rubric.deduction_criteria,
+                    evidence_requirement=rubric.evidence_requirement,
+                    sort_order=rubric.sort_order,
+                    created_at=rubric.created_at,
+                    updated_at=rubric.updated_at,
+                )
+                for rubric in sorted(question.rubrics, key=lambda item: (item.sort_order, item.id))
+            ],
             created_at=question.created_at,
             updated_at=question.updated_at,
         )
