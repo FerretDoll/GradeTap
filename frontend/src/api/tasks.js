@@ -51,3 +51,8 @@ export async function listTaskQuestions(taskId) {
   const response = await apiClient.get(`/tasks/${taskId}/questions`);
   return response.data;
 }
+
+export async function prepareTaskStudents(taskId) {
+  const response = await apiClient.post(`/tasks/${taskId}/prepare-students`);
+  return response.data;
+}

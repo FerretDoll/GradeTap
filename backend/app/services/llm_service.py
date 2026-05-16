@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -39,6 +40,46 @@ class LLMService:
                 return self.parse_json_response(raw_text)
             except json.JSONDecodeError as exc:
                 last_error = exc
+                repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
+                repaired_text = self._chat_completion(
+                    prompt=repair_prompt,
+                    settings=settings,
+                    response_format={"type": "json_object"},
+                )
+                try:
+                    return self.parse_json_response(repaired_text)
+                except json.JSONDecodeError as repair_exc:
+                    last_error = repair_exc
+        raise ValueError("LLM did not return valid JSON") from last_error
+
+    def chat_json_stream(
+        self,
+        prompt: str,
+        schema: Optional[dict[str, Any]] = None,
+        on_delta: Callable[[str], None] | None = None,
+        max_retries: int | None = None,
+    ) -> dict[str, Any]:
+        settings = self._get_runtime_settings()
+        retries = max_retries or settings["max_retries"]
+        schema_text = json.dumps(schema, ensure_ascii=False) if schema else ""
+        json_prompt = prompt
+        if schema_text:
+            json_prompt = f"{prompt}\n\n输出必须匹配这个 JSON Schema：\n{schema_text}"
+
+        last_error: Exception | None = None
+        for _ in range(retries):
+            raw_text = self._chat_completion_stream(
+                prompt=json_prompt,
+                settings=settings,
+                response_format={"type": "json_object"},
+                on_delta=on_delta,
+            )
+            try:
+                return self.parse_json_response(raw_text)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                if on_delta:
+                    on_delta("\n\n[系统] JSON 格式校验失败，正在请求模型修复格式...\n")
                 repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
                 repaired_text = self._chat_completion(
                     prompt=repair_prompt,
@@ -122,6 +163,77 @@ class LLMService:
         if not content:
             raise ValueError("LLM provider returned empty content")
         return str(content).strip()
+
+    def _chat_completion_stream(
+        self,
+        prompt: str,
+        settings: dict[str, Any],
+        response_format: dict[str, str] | None = None,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> str:
+        url = f"{settings['base_url'].rstrip('/')}/chat/completions"
+        payload: dict[str, Any] = {
+            "model": settings["model"],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是 GradeTap 的后端模型调用层。请严格按业务提示输出。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": settings["temperature"],
+            "stream": True,
+        }
+        if response_format:
+            payload["response_format"] = response_format
+
+        request = Request(
+            url=url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {settings['api_key']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        chunks: list[str] = []
+        try:
+            with urlopen(request, timeout=120) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = self._extract_stream_delta(payload)
+                    if not delta:
+                        continue
+                    chunks.append(delta)
+                    if on_delta:
+                        on_delta(delta)
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"LLM provider returned HTTP {exc.code}: {detail}") from exc
+
+        content = "".join(chunks).strip()
+        if not content:
+            raise ValueError("LLM provider returned empty streamed content")
+        return content
+
+    def _extract_stream_delta(self, payload: dict[str, Any]) -> str:
+        choices = payload.get("choices") or []
+        if not choices:
+            return ""
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, list):
+            return "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+        return str(content or "")
 
     def _build_json_repair_prompt(self, raw_text: str, schema_text: str = "") -> str:
         schema_instruction = f"\nJSON Schema：\n{schema_text}" if schema_text else ""

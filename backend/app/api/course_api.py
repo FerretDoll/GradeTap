@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
 from app.schemas.course import (
@@ -14,6 +15,7 @@ from app.schemas.course import (
     CourseUpdate,
 )
 from app.services.course_service import course_service
+from app.services.progress_event_service import progress_event_service
 
 router = APIRouter()
 
@@ -120,6 +122,15 @@ def analyze_assignment_questions(course_id: int, assignment_id: int) -> dict:
 @router.post("/{course_id}/assignments/{assignment_id}/build-rubrics")
 def build_assignment_rubrics(course_id: int, assignment_id: int) -> dict:
     return course_service.build_assignment_rubrics(course_id, assignment_id)
+
+
+@router.get("/{course_id}/assignments/{assignment_id}/events")
+def stream_assignment_events(course_id: int, assignment_id: int) -> StreamingResponse:
+    return StreamingResponse(
+        progress_event_service.stream(f"assignment:{course_id}:{assignment_id}"),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{course_id}/assignments/{assignment_id}/questions")

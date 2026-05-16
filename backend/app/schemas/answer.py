@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,30 @@ class StudentSubmissionRead(StudentSubmissionBase):
     task_id: int
     created_at: datetime
     updated_at: datetime
+
+
+class StudentFileMatchRead(BaseModel):
+    student_id: int
+    student_name: str
+    student_no: str = ""
+    match_status: Literal["matched", "missing", "ambiguous"]
+    matched_file_id: Optional[int] = None
+    matched_file_name: str = ""
+    confidence: float = Field(default=0, ge=0, le=1)
+    reason: str = ""
+    candidate_files: list[str] = Field(default_factory=list)
+    submission_id: Optional[int] = None
+
+
+class StudentPrepareResponse(BaseModel):
+    task_id: int
+    status: str
+    stage: str = "prepare_students"
+    matched_count: int
+    total_students: int
+    missing_count: int
+    ambiguous_count: int
+    matches: list[StudentFileMatchRead]
 
 
 class StudentAnswerBase(BaseModel):

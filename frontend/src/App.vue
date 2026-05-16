@@ -1,15 +1,26 @@
 ﻿<template>
-  <el-container class="app-shell grade-console">
-    <el-aside class="sidebar" width="264px">
+  <el-container class="app-shell grade-console" :class="{ 'app-shell--collapsed': sidebarCollapsed }">
+    <el-aside
+      class="sidebar"
+      :class="{ 'sidebar--collapsed': sidebarCollapsed }"
+      :style="{ width: sidebarCollapsed ? '78px' : '264px' }"
+    >
       <div class="brand-lockup">
-        <div class="brand-mark">GT</div>
-        <div>
-          <strong>GradeTap</strong>
-          <span>AI 作业批改助手</span>
-        </div>
+        <img
+          class="brand-logo brand-logo--full"
+          src="/brand/gradetap-sidebar-logo.svg"
+          alt="GradeTap AI 作业批改助手"
+        />
+        <img
+          class="brand-logo brand-logo--mark"
+          src="/brand/gradetap-mark.svg"
+          alt=""
+          aria-hidden="true"
+        />
+        <span class="brand-subtitle">证据驱动的教师批改工作台</span>
       </div>
 
-      <el-menu :default-active="activeMenu" class="side-menu" @select="handleMenuSelect">
+      <el-menu :default-active="activeMenu" :collapse="sidebarCollapsed" class="side-menu" @select="handleMenuSelect">
         <el-menu-item index="tasks">
           <el-icon><DocumentChecked /></el-icon>
           <span>批改任务</span>
@@ -27,9 +38,21 @@
           <span>模型设置</span>
         </el-menu-item>
       </el-menu>
+      <button
+        type="button"
+        class="sidebar-collapse-button"
+        :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+        @click="toggleSidebar"
+      >
+        <el-icon>
+          <Expand v-if="sidebarCollapsed" />
+          <Fold v-else />
+        </el-icon>
+        <span>{{ sidebarCollapsed ? "展开" : "收起" }}</span>
+      </button>
     </el-aside>
 
-    <el-container>
+    <el-container class="main-shell">
       <el-header class="topbar">
         <div class="page-title">
           <span class="eyebrow">{{ currentPage.eyebrow }}</span>
@@ -98,9 +121,11 @@
                 <div class="panel-heading">
                   <div>
                     <span class="section-kicker">Tasks</span>
-                    <h2>批改任务</h2>
+                    <div class="heading-title-row">
+                      <h2>批改任务</h2>
+                      <el-tag effect="plain">{{ taskStore.items.length }} 个任务</el-tag>
+                    </div>
                   </div>
-                  <el-tag effect="plain">{{ taskStore.items.length }} 个任务</el-tag>
                 </div>
 
                 <el-table
@@ -138,27 +163,30 @@
             </section>
 
             <section v-else-if="activeView === 'taskDetail'" class="task-detail">
-              <el-button class="inline-back" :icon="Back" @click="returnToList">
-                返回上一页
-              </el-button>
               <div class="panel detail-header">
                 <div>
                   <span class="section-kicker">Task Detail</span>
                   <h2>{{ selectedTask?.task_name || "批改任务" }}</h2>
                   <p>{{ selectedTask?.course_name }} / {{ selectedTask?.class_name }}</p>
                 </div>
-                <el-tag class="status-tag" effect="light">{{ selectedTask?.status || "created" }}</el-tag>
+                <div class="detail-header-actions">
+                  <el-tag class="status-tag" effect="light">{{ selectedTask?.status || "created" }}</el-tag>
+                </div>
               </div>
 
               <div class="detail-grid">
-                <div class="panel progress-panel">
+                <div class="panel progress-panel" :class="{ 'runtime-flow': questionAnalysisLoading }">
                   <div class="panel-heading">
                     <div>
                       <span class="section-kicker">Progress</span>
                       <h2>批改进度</h2>
                     </div>
                   </div>
-                  <el-progress :percentage="selectedTaskProgress" :stroke-width="10" />
+                  <el-progress
+                    :percentage="selectedTaskProgress"
+                    :stroke-width="10"
+                    :class="{ 'progress-bar--running': questionAnalysisLoading }"
+                  />
                   <div class="progress-stages" :style="{ '--stage-count': visibleTaskStages.length }">
                     <button
                       v-for="stage in visibleTaskStages"
@@ -168,24 +196,42 @@
                       :class="{
                         active: stage.key === activeProgressStage.key,
                         current: stage.key === normalizedTaskProgressStageKey,
+                        running: questionAnalysisLoading && stage.key === 'analyze_questions',
                       }"
                       @click="selectProgressStage(stage.key)"
                     >
-                      <strong>{{ stage.title }}</strong>
+                      <strong>
+                        {{ stage.title }}
+                        <span
+                          v-if="questionAnalysisLoading && stage.key === 'analyze_questions'"
+                          class="stage-loading-dot"
+                          aria-hidden="true"
+                        />
+                      </strong>
                       <span>{{ stage.caption }}</span>
                     </button>
                   </div>
                   <div
                     class="progress-stage-detail"
-                    :class="{ 'progress-stage-detail--analysis': activeProgressStage.key === 'analyze_questions' }"
+                    :class="{
+                      'progress-stage-detail--analysis': activeProgressStage.key === 'analyze_questions',
+                      'progress-stage-detail--student-parse': activeProgressStage.key === 'prepare_students',
+                    }"
                   >
                     <div class="stage-detail-title">
-                      <div>
+                      <div v-if="activeProgressStage.key === 'prepare_students'">
+                        <span class="section-kicker">Match Summary</span>
+                        <h3>{{ studentParseMatchedCount }}/{{ studentParseTotalCount }} 名学生已匹配</h3>
+                      </div>
+                      <div v-else-if="activeProgressStage.key === 'analyze_questions'">
                         <span class="section-kicker">{{ activeProgressStage.eyebrow }}</span>
                         <h3>{{ activeProgressStage.title }}</h3>
                       </div>
                       <div class="stage-detail-actions">
                         <el-tag effect="plain">{{ activeProgressStageStatus }}</el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'prepare_students'" effect="plain">
+                          {{ uploadedStudentSubmissionFileCount }} 个学生作业文件
+                        </el-tag>
                         <template v-if="activeProgressStage.key === 'analyze_questions'">
                           <el-button
                             size="small"
@@ -193,23 +239,32 @@
                             :loading="questionAnalysisLoading"
                             @click="runQuestionAnalysis"
                           >
-                            开始题目分析
+                            {{ taskQuestions.length ? "重新分析题目" : "开始题目分析" }}
+                          </el-button>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'prepare_students'">
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :loading="studentPrepareLoading"
+                            @click="runStudentPrepare"
+                          >
+                            {{ selectedTaskStudentMatches.length ? "重新解析学生" : "开始学生解析" }}
                           </el-button>
                         </template>
                       </div>
                     </div>
-                    <p>{{ activeProgressStage.detail }}</p>
-                    <div v-if="activeProgressStage.key !== 'analyze_questions'" class="stage-detail-grid">
-                      <div>
-                        <span>当前内容</span>
-                        <strong>{{ activeProgressStage.content }}</strong>
-                      </div>
-                      <div>
-                        <span>关键产出</span>
-                        <strong>{{ activeProgressStage.output }}</strong>
-                      </div>
-                    </div>
                     <div v-if="activeProgressStage.key === 'analyze_questions'" class="question-analysis-panel">
+                      <div
+                        v-if="questionAnalysisLoading"
+                        class="llm-stream-panel running"
+                      >
+                        <div class="llm-stream-heading">
+                          <strong>模型实时进度</strong>
+                          <el-tag effect="plain">{{ taskLlmStream.status }}</el-tag>
+                        </div>
+                        <pre>{{ taskLlmStream.text || "等待模型开始分析题目..." }}</pre>
+                      </div>
                       <div class="question-analysis-heading">
                         <strong>题目分析结果</strong>
                         <el-tag effect="plain">{{ taskQuestions.length }} 道题</el-tag>
@@ -245,6 +300,46 @@
                         :image-size="72"
                       />
                     </div>
+                    <div v-else-if="activeProgressStage.key === 'prepare_students'" class="student-parse-panel">
+                      <div
+                        v-if="taskClassStudents.length && selectedTaskStudentMatches.length"
+                        v-loading="studentPrepareLoading"
+                        class="student-match-list"
+                      >
+                        <div class="student-match-head">
+                          <span>学生</span>
+                          <span>匹配文件</span>
+                        </div>
+                        <div
+                          v-for="match in selectedTaskStudentMatches"
+                          :key="match.student_id"
+                          class="student-match-row"
+                        >
+                          <div class="student-match-student">
+                            <strong>{{ match.student_name }}</strong>
+                            <span>{{ match.student_no || "未填写学号" }}</span>
+                          </div>
+                          <div class="student-match-file">
+                            <div>
+                              <strong>{{ match.matched_file_name || "未匹配到文件" }}</strong>
+                              <span>{{ match.reason }}</span>
+                              <small v-if="match.match_status === 'ambiguous' && match.candidate_files?.length">
+                                候选：{{ match.candidate_files.join("、") }}
+                              </small>
+                            </div>
+                            <el-tag :type="studentMatchStatusMeta(match.match_status).type" effect="light">
+                              {{ studentMatchStatusMeta(match.match_status).label }}
+                            </el-tag>
+                          </div>
+                        </div>
+                      </div>
+                      <el-empty
+                        v-else
+                        class="student-parse-empty"
+                        description="请先维护班级学生并上传学生作业文件"
+                        :image-size="72"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -252,13 +347,14 @@
                   <div class="panel-heading">
                     <div>
                       <span class="section-kicker">Files</span>
-                      <h2>任务材料</h2>
+                      <div class="heading-title-row">
+                        <h2>任务材料</h2>
+                      </div>
                     </div>
                     <div class="material-heading-actions">
                       <el-button size="small" :loading="parseFilesLoading" @click="parseSelectedTaskFiles">
                         解析文件
                       </el-button>
-                      <el-tag effect="plain">{{ uploadedTaskFileCount }} 个文件</el-tag>
                     </div>
                   </div>
                   <div v-loading="taskFilesLoading" class="material-upload-list">
@@ -266,70 +362,99 @@
                       v-for="material in taskMaterials"
                       :key="material.role"
                       class="material-upload-card"
-                      :class="{ 'material-upload-card--student': material.role === 'student_submission' }"
+                      :class="{
+                        'material-upload-card--student': material.role === 'student_submission',
+                        'material-upload-card--readonly': material.readOnly,
+                      }"
                     >
-                      <div class="material-upload-header">
-                        <div>
-                          <strong>{{ material.title }}</strong>
-                          <span>{{ material.description }}</span>
+                      <template v-if="material.readOnly">
+                        <div class="task-material-readonly-row">
+                          <span class="task-material-readonly-label">{{ material.title }}</span>
+                          <template v-if="taskFilesForRole(material.role).length">
+                            <span class="task-material-readonly-sep" aria-hidden="true">·</span>
+                            <div class="task-material-readonly-files">
+                              <button
+                                v-for="file in taskFilesForRole(material.role)"
+                                :key="file.id"
+                                type="button"
+                                class="task-material-filename-link"
+                                :title="file.file_name"
+                                @click="openParsedTextPreview(file)"
+                              >
+                                {{ file.file_name }}
+                              </button>
+                            </div>
+                          </template>
+                          <span v-else class="task-material-readonly-missing">暂无</span>
                         </div>
-                        <el-tag :type="taskFilesForRole(material.role).length ? 'success' : 'info'" effect="plain">
-                          {{ taskFilesForRole(material.role).length ? "已上传" : "待上传" }}
-                        </el-tag>
-                      </div>
-                      <el-upload
-                        :accept="material.accept"
-                        :auto-upload="false"
-                        :multiple="material.multiple"
-                        :show-file-list="false"
-                        :on-change="(uploadFile) => handleTaskMaterialChange(material, uploadFile)"
-                      >
-                        <el-button
-                          class="material-upload-button"
-                          :icon="Upload"
-                          :loading="taskFileUploading[material.role]"
-                        >
-                          {{ material.multiple ? "添加文件" : "上传文件" }}
-                        </el-button>
-                      </el-upload>
-                      <div
-                        class="uploaded-file-list"
-                        :class="{
-                          'uploaded-file-list--scrollable':
-                            material.role === 'student_submission'
-                            && taskFilesForRole(material.role).length > 0,
-                        }"
-                      >
-                        <div
-                          v-for="file in taskFilesForRole(material.role)"
-                          :key="file.id"
-                          class="uploaded-file-item"
-                        >
-                          <div class="uploaded-file-main">
-                            <span :title="file.file_name">{{ file.file_name }}</span>
-                            <small v-if="file.parsed_text">解析文本 {{ file.parsed_text.length }} 字</small>
-                            <small v-else>尚未解析</small>
+                      </template>
+                      <template v-else>
+                        <div class="material-upload-header">
+                          <div>
+                            <div class="material-student-heading">
+                              <strong>{{ material.title }}</strong>
+                              <el-tag effect="plain">{{ uploadedStudentSubmissionFileCount }} 个文件</el-tag>
+                            </div>
+                            <span v-if="material.description">{{ material.description }}</span>
                           </div>
-                          <el-button
-                            v-if="file.parsed_text"
-                            text
-                            size="small"
-                            @click="openParsedTextPreview(file)"
-                          >
-                            查看
-                          </el-button>
-                          <el-button
-                            :icon="Delete"
-                            circle
-                            text
-                            type="danger"
-                            title="移除"
-                            :loading="taskFileDeletingId === file.id"
-                            @click="removeTaskMaterialFile(file)"
-                          />
+                          <el-tag :type="taskFilesForRole(material.role).length ? 'success' : 'info'" effect="plain">
+                            {{ taskFilesForRole(material.role).length ? "已上传" : "待上传" }}
+                          </el-tag>
                         </div>
-                        <p v-if="!taskFilesForRole(material.role).length">尚未选择文件</p>
-                      </div>
+                        <el-upload
+                          :accept="material.accept"
+                          :auto-upload="false"
+                          :multiple="material.multiple"
+                          :show-file-list="false"
+                          :on-change="(uploadFile) => handleTaskMaterialChange(material, uploadFile)"
+                        >
+                          <el-button
+                            class="material-upload-button"
+                            :icon="Upload"
+                            :loading="taskFileUploading[material.role]"
+                          >
+                            {{ material.multiple ? "添加文件" : "上传文件" }}
+                          </el-button>
+                        </el-upload>
+                        <div
+                          class="uploaded-file-list"
+                          :class="{
+                            'uploaded-file-list--scrollable':
+                              material.role === 'student_submission'
+                              && taskFilesForRole(material.role).length > 0,
+                          }"
+                        >
+                          <div
+                            v-for="file in taskFilesForRole(material.role)"
+                            :key="file.id"
+                            class="uploaded-file-item"
+                          >
+                            <div class="uploaded-file-main">
+                              <span :title="file.file_name">{{ file.file_name }}</span>
+                              <small v-if="file.parsed_text">解析文本 {{ file.parsed_text.length }} 字</small>
+                              <small v-else>尚未解析</small>
+                            </div>
+                            <el-button
+                              v-if="file.parsed_text"
+                              text
+                              size="small"
+                              @click="openParsedTextPreview(file)"
+                            >
+                              查看
+                            </el-button>
+                            <el-button
+                              :icon="Delete"
+                              circle
+                              text
+                              type="danger"
+                              title="移除"
+                              :loading="taskFileDeletingId === file.id"
+                              @click="removeTaskMaterialFile(file)"
+                            />
+                          </div>
+                          <p v-if="!taskFilesForRole(material.role).length">尚未选择文件</p>
+                        </div>
+                      </template>
                     </div>
                   </div>
                 </div>
@@ -348,9 +473,11 @@
                 <div class="panel-heading">
                   <div>
                     <span class="section-kicker">Courses</span>
-                    <h2>课程列表</h2>
+                    <div class="heading-title-row">
+                      <h2>课程列表</h2>
+                      <el-tag effect="plain">{{ courses.length }} 门课程</el-tag>
+                    </div>
                   </div>
-                  <el-tag effect="plain">{{ courses.length }} 门课程</el-tag>
                 </div>
 
                 <el-table :data="courses" height="100%" class="task-table" empty-text="暂无课程">
@@ -376,16 +503,15 @@
             </section>
 
             <section v-else-if="activeView === 'courseDetail'" class="task-detail">
-              <el-button class="inline-back" :icon="Back" @click="returnToList">
-                返回上一页
-              </el-button>
               <div class="panel detail-header">
                 <div>
                   <span class="section-kicker">Course Detail</span>
-                  <h2>{{ selectedCourse?.course_name || "课程" }}</h2>
+                  <div class="heading-title-row">
+                    <h2>{{ selectedCourse?.course_name || "课程" }}</h2>
+                    <el-tag effect="plain">{{ selectedCourse?.assignment_count ?? 0 }} 个作业</el-tag>
+                  </div>
                   <p>{{ selectedCourse?.description || "未填写课程说明" }}</p>
                 </div>
-                <el-tag effect="plain">{{ selectedCourse?.assignment_count ?? 0 }} 个作业</el-tag>
               </div>
 
               <div
@@ -445,6 +571,23 @@
                         <el-tag effect="plain">{{ row.file_count ?? 0 }}</el-tag>
                       </template>
                     </el-table-column>
+                    <el-table-column label="量规" width="90" align="center">
+                      <template #default="{ row }">
+                        <el-tooltip
+                          :content="assignmentRubricBound(row) ? '评分量规已确认绑定' : '评分量规尚未绑定'"
+                          placement="top"
+                        >
+                          <span
+                            class="rubric-bind-icon"
+                            :class="{ bound: assignmentRubricBound(row) }"
+                            :aria-label="assignmentRubricBound(row) ? '量规已绑定' : '量规未绑定'"
+                          >
+                            <el-icon v-if="assignmentRubricBound(row)"><Check /></el-icon>
+                            <span v-else class="rubric-bind-icon-dot">!</span>
+                          </span>
+                        </el-tooltip>
+                      </template>
+                    </el-table-column>
                     <el-table-column label="操作" width="120" fixed="right" align="center">
                       <template #default="{ row }">
                         <div class="icon-actions">
@@ -455,8 +598,16 @@
                     </el-table-column>
                   </el-table>
                   <Transition name="assignment-material">
-                    <div v-if="selectedCourseAssignment" class="assignment-workflow-panel">
-                      <el-progress :percentage="selectedAssignmentRubricProgress" :stroke-width="10" />
+                    <div
+                      v-if="selectedCourseAssignment"
+                      class="assignment-workflow-panel"
+                      :class="{ 'runtime-flow': assignmentQuestionAnalysisLoading || assignmentRubricBuildLoading }"
+                    >
+                      <el-progress
+                        :percentage="selectedAssignmentRubricProgress"
+                        :stroke-width="10"
+                        :class="{ 'progress-bar--running': assignmentQuestionAnalysisLoading || assignmentRubricBuildLoading }"
+                      />
                       <div class="progress-stages" :style="{ '--stage-count': assignmentRubricStages.length }">
                         <button
                           v-for="stage in assignmentRubricStages"
@@ -466,111 +617,138 @@
                           :class="{
                             active: stage.key === activeAssignmentRubricStage.key,
                             current: stage.key === currentAssignmentRubricStageKey,
+                            running:
+                              (assignmentQuestionAnalysisLoading && stage.key === 'analyze_questions')
+                              || (assignmentRubricBuildLoading && stage.key === 'build_rubrics'),
                           }"
                           @click="selectAssignmentRubricStage(stage.key)"
                         >
-                          <strong>{{ stage.title }}</strong>
+                          <strong>
+                            {{ stage.title }}
+                            <span
+                              v-if="
+                                (assignmentQuestionAnalysisLoading && stage.key === 'analyze_questions')
+                                || (assignmentRubricBuildLoading && stage.key === 'build_rubrics')
+                              "
+                              class="stage-loading-dot"
+                              aria-hidden="true"
+                            />
+                          </strong>
                           <span>{{ stage.caption }}</span>
                         </button>
                       </div>
-                      <div class="progress-stage-detail">
-                        <div class="stage-detail-title">
-                          <div>
-                            <span class="section-kicker">{{ activeAssignmentRubricStage.eyebrow }}</span>
-                            <h3>{{ activeAssignmentRubricStage.title }}</h3>
-                          </div>
-                          <div class="stage-detail-actions">
-                            <el-tag effect="plain">{{ activeAssignmentRubricStageStatus }}</el-tag>
-                            <el-button
-                              v-if="activeAssignmentRubricStage.key === 'analyze_questions'"
-                              size="small"
-                              type="primary"
-                              :loading="assignmentQuestionAnalysisLoading"
-                              @click="runAssignmentQuestionAnalysis"
-                            >
-                              开始题目分析
-                            </el-button>
-                            <el-button
-                              v-else-if="activeAssignmentRubricStage.key === 'build_rubrics'"
-                              size="small"
-                              type="primary"
-                              :disabled="!selectedAssignmentQuestions.length"
-                              :loading="assignmentRubricBuildLoading"
-                              @click="runAssignmentRubricBuild"
-                            >
-                              生成评分量规
-                            </el-button>
-                            <el-button
-                              v-else-if="activeAssignmentRubricStage.key === 'teacher_confirm_rubrics'"
-                              size="small"
-                              type="success"
-                              :disabled="!selectedAssignmentHasRubrics"
-                              :loading="assignmentRubricConfirmLoading"
-                              @click="confirmSelectedAssignmentRubrics"
-                            >
-                              确认并绑定
-                            </el-button>
-                          </div>
-                        </div>
-                        <p>{{ activeAssignmentRubricStage.detail }}</p>
-                        <div class="progress-stage-result">
-                          <el-table
-                            v-if="activeAssignmentRubricStage.key === 'analyze_questions' && selectedAssignmentQuestions.length"
-                            :data="selectedAssignmentQuestions"
-                            size="small"
-                            height="100%"
-                            class="task-table question-analysis-table"
-                          >
-                            <el-table-column prop="question_number" label="题号" width="80" align="center" />
-                            <el-table-column prop="content" label="题干" min-width="220" show-overflow-tooltip />
-                            <el-table-column prop="question_type" label="题型" width="120" align="center" />
-                            <el-table-column label="知识点" min-width="160" show-overflow-tooltip>
-                              <template #default="{ row }">
-                                {{ formatKnowledgePoints(row.knowledge_points) }}
-                              </template>
-                            </el-table-column>
-                            <el-table-column label="难度" width="100" align="center">
-                              <template #default="{ row }">
-                                <el-tag :type="difficultyMeta(row.difficulty).type" effect="light">
-                                  {{ difficultyMeta(row.difficulty).label }}
-                                </el-tag>
-                              </template>
-                            </el-table-column>
-                            <el-table-column prop="total_score" label="分值" width="90" align="center" />
-                          </el-table>
-                          <div
-                            v-else-if="activeAssignmentRubricStage.key !== 'analyze_questions' && selectedAssignmentQuestions.length"
-                            class="assignment-rubric-list"
-                          >
-                            <div
-                              v-for="question in selectedAssignmentQuestions"
-                              :key="question.question_number"
-                              class="assignment-rubric-item"
-                            >
-                              <div class="assignment-rubric-title">
-                                <strong>{{ question.question_number }}. {{ question.content }}</strong>
-                                <el-tag effect="plain">{{ question.total_score }} 分</el-tag>
+                      <div
+                        class="progress-stage-detail"
+                      >
+                          <div class="assignment-rubric-step-panel">
+                            <div class="stage-detail-title">
+                              <div>
+                                <span class="section-kicker">{{ activeAssignmentRubricStage.eyebrow }}</span>
+                                <h3>{{ activeAssignmentRubricStage.title }}</h3>
                               </div>
+                              <div class="stage-detail-actions">
+                                <el-tag effect="plain">{{ activeAssignmentRubricStageStatus }}</el-tag>
+                                <el-button
+                                  v-if="activeAssignmentRubricStage.key === 'analyze_questions'"
+                                  size="small"
+                                  type="primary"
+                                  :loading="assignmentQuestionAnalysisLoading"
+                                  @click="runAssignmentQuestionAnalysis"
+                                >
+                                  {{ selectedAssignmentQuestions.length ? "重新分析题目" : "开始题目分析" }}
+                                </el-button>
+                                <el-button
+                                  v-else-if="activeAssignmentRubricStage.key === 'build_rubrics'"
+                                  size="small"
+                                  type="primary"
+                                  :disabled="!selectedAssignmentQuestions.length"
+                                  :loading="assignmentRubricBuildLoading"
+                                  @click="runAssignmentRubricBuild"
+                                >
+                                  {{ selectedAssignmentHasRubrics ? "重新生成评分量规" : "生成评分量规" }}
+                                </el-button>
+                                <el-button
+                                  v-else-if="activeAssignmentRubricStage.key === 'teacher_confirm_rubrics'"
+                                  size="small"
+                                  type="success"
+                                  :disabled="!selectedAssignmentHasRubrics"
+                                  :loading="assignmentRubricConfirmLoading"
+                                  @click="confirmSelectedAssignmentRubrics"
+                                >
+                                  确认并绑定
+                                </el-button>
+                              </div>
+                            </div>
+                            <p>{{ activeAssignmentRubricStage.detail }}</p>
+                            <div
+                              v-if="assignmentQuestionAnalysisLoading || assignmentRubricBuildLoading"
+                              class="llm-stream-panel running"
+                            >
+                              <div class="llm-stream-heading">
+                                <strong>模型实时进度</strong>
+                                <el-tag effect="plain">{{ assignmentLlmStream.status }}</el-tag>
+                              </div>
+                              <pre>{{ assignmentLlmStream.text || llmProgressPlaceholder(assignmentLlmStream.stage) }}</pre>
+                            </div>
+                            <div class="progress-stage-result">
                               <el-table
-                                :data="question.rubrics ?? []"
+                                v-if="activeAssignmentRubricStage.key === 'analyze_questions' && selectedAssignmentQuestions.length"
+                                :data="selectedAssignmentQuestions"
                                 size="small"
-                                class="task-table"
-                                empty-text="尚未生成评分量规"
+                                height="100%"
+                                class="task-table question-analysis-table"
                               >
-                                <el-table-column prop="dimension_name" label="评分维度" min-width="130" />
-                                <el-table-column prop="max_score" label="分值" width="80" align="center" />
-                                <el-table-column prop="scoring_criteria" label="得分条件" min-width="180" show-overflow-tooltip />
-                                <el-table-column prop="deduction_criteria" label="扣分条件" min-width="180" show-overflow-tooltip />
-                                <el-table-column prop="evidence_requirement" label="证据要求" min-width="180" show-overflow-tooltip />
+                                <el-table-column prop="question_number" label="题号" width="80" align="center" />
+                                <el-table-column prop="content" label="题干" min-width="220" show-overflow-tooltip />
+                                <el-table-column prop="question_type" label="题型" width="120" align="center" />
+                                <el-table-column label="知识点" min-width="160" show-overflow-tooltip>
+                                  <template #default="{ row }">
+                                    {{ formatKnowledgePoints(row.knowledge_points) }}
+                                  </template>
+                                </el-table-column>
+                                <el-table-column label="难度" width="100" align="center">
+                                  <template #default="{ row }">
+                                    <el-tag :type="difficultyMeta(row.difficulty).type" effect="light">
+                                      {{ difficultyMeta(row.difficulty).label }}
+                                    </el-tag>
+                                  </template>
+                                </el-table-column>
+                                <el-table-column prop="total_score" label="分值" width="90" align="center" />
                               </el-table>
+                              <div
+                                v-else-if="activeAssignmentRubricStage.key !== 'analyze_questions' && selectedAssignmentQuestions.length"
+                                class="assignment-rubric-list"
+                              >
+                                <div
+                                  v-for="question in selectedAssignmentQuestions"
+                                  :key="question.question_number"
+                                  class="assignment-rubric-item"
+                                >
+                                  <div class="assignment-rubric-title">
+                                    <strong>{{ question.question_number }}. {{ question.content }}</strong>
+                                    <el-tag effect="plain">{{ question.total_score }} 分</el-tag>
+                                  </div>
+                                  <el-table
+                                    :data="question.rubrics ?? []"
+                                    size="small"
+                                    class="task-table"
+                                    empty-text="尚未生成评分量规"
+                                  >
+                                    <el-table-column prop="dimension_name" label="评分维度" min-width="130" />
+                                    <el-table-column prop="max_score" label="分值" width="80" align="center" />
+                                    <el-table-column prop="scoring_criteria" label="得分条件" min-width="180" show-overflow-tooltip />
+                                    <el-table-column prop="deduction_criteria" label="扣分条件" min-width="180" show-overflow-tooltip />
+                                    <el-table-column prop="evidence_requirement" label="证据要求" min-width="180" show-overflow-tooltip />
+                                  </el-table>
+                                </div>
+                              </div>
+                              <el-empty
+                                v-else
+                                description="点击当前步骤按钮后，将在这里查看作业题目、量规和确认状态"
+                                :image-size="72"
+                              />
                             </div>
                           </div>
-                          <el-empty
-                            v-else
-                            description="点击当前步骤按钮后，将在这里查看作业题目、量规和确认状态"
-                            :image-size="72"
-                          />
-                        </div>
                       </div>
                     </div>
                   </Transition>
@@ -581,7 +759,10 @@
                     <div class="panel-heading">
                       <div>
                         <span class="section-kicker">Materials</span>
-                        <h2>作业文件与答案</h2>
+                        <div class="heading-title-row">
+                          <h2>作业文件与答案</h2>
+                          <el-tag effect="plain">{{ uploadedAssignmentFileCount }} 个文件</el-tag>
+                        </div>
                       </div>
                       <div class="material-heading-actions">
                         <el-button
@@ -592,7 +773,6 @@
                         >
                           解析材料
                         </el-button>
-                        <el-tag effect="plain">{{ uploadedAssignmentFileCount }} 个文件</el-tag>
                       </div>
                     </div>
                     <div class="assignment-material-title">
@@ -669,9 +849,11 @@
                 <div class="panel-heading">
                   <div>
                     <span class="section-kicker">Classes</span>
-                    <h2>班级列表</h2>
+                    <div class="heading-title-row">
+                      <h2>班级列表</h2>
+                      <el-tag effect="plain">{{ classes.length }} 个班级</el-tag>
+                    </div>
                   </div>
-                  <el-tag effect="plain">{{ classes.length }} 个班级</el-tag>
                 </div>
 
                 <el-table :data="classes" height="100%" class="task-table" empty-text="暂无班级">
@@ -697,16 +879,15 @@
             </section>
 
             <section v-else-if="activeView === 'classDetail'" class="task-detail">
-              <el-button class="inline-back" :icon="Back" @click="returnToList">
-                返回上一页
-              </el-button>
               <div class="panel detail-header">
                 <div>
                   <span class="section-kicker">Class Detail</span>
-                  <h2>{{ selectedClass?.class_name || "班级" }}</h2>
+                  <div class="heading-title-row">
+                    <h2>{{ selectedClass?.class_name || "班级" }}</h2>
+                    <el-tag effect="plain">{{ classStudents.length }} 名学生</el-tag>
+                  </div>
                   <p>{{ selectedClass?.note || "未填写备注" }}</p>
                 </div>
-                <el-tag effect="plain">{{ classStudents.length }} 名学生</el-tag>
               </div>
 
               <div class="detail-grid">
@@ -906,6 +1087,9 @@
           </div>
         </Transition>
       </el-main>
+      <el-footer class="app-footer">
+        © 2026 武汉软件工程职业学院 信息学院
+      </el-footer>
     </el-container>
   </el-container>
 
@@ -1033,7 +1217,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Back,
@@ -1042,6 +1226,8 @@ import {
   Delete,
   DocumentChecked,
   Edit,
+  Expand,
+  Fold,
   Plus,
   Refresh,
   School,
@@ -1050,6 +1236,7 @@ import {
 } from "@element-plus/icons-vue";
 
 import { useTaskStore } from "./stores/taskStore";
+import { buildApiUrl } from "./api/client";
 import {
   createClassGroup,
   createClassStudent,
@@ -1084,6 +1271,7 @@ import {
   deleteTaskFile,
   listTaskQuestions,
   listTaskFiles,
+  prepareTaskStudents,
   uploadTaskFile,
 } from "./api/tasks";
 import {
@@ -1095,6 +1283,7 @@ import {
 
 const taskStore = useTaskStore();
 const activeView = ref("tasks");
+const sidebarCollapsed = ref(false);
 const selectedTaskId = ref(null);
 const selectedCourseId = ref(null);
 const selectedCourseAssignmentId = ref(null);
@@ -1124,6 +1313,7 @@ const assignmentFilesLoading = ref(false);
 const taskFileDeletingId = ref(null);
 const assignmentFileDeletingId = ref(null);
 const parseFilesLoading = ref(false);
+const studentPrepareLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
 const assignmentQuestionAnalysisLoading = ref(false);
@@ -1189,7 +1379,19 @@ const courses = ref([]);
 const courseAssignments = ref([]);
 const classes = ref([]);
 const classStudents = ref([]);
+const taskClassStudents = ref([]);
 const taskQuestions = ref([]);
+const activeEventSources = new Set();
+const taskLlmStream = reactive({
+  stage: "",
+  status: "等待开始",
+  text: "",
+});
+const assignmentLlmStream = reactive({
+  stage: "",
+  status: "等待开始",
+  text: "",
+});
 
 const pageMeta = {
   tasks: { eyebrow: "Teacher Review Console", title: "批改任务工作台" },
@@ -1234,9 +1436,18 @@ const selectedTaskFileGroup = computed(() => getTaskFileGroup(selectedTaskId.val
 const uploadedAssignmentFileCount = computed(() =>
   Object.values(selectedAssignmentFileGroup.value).reduce((sum, files) => sum + files.length, 0),
 );
-const uploadedTaskFileCount = computed(() =>
-  Object.values(selectedTaskFileGroup.value).reduce((sum, files) => sum + files.length, 0),
+const uploadedStudentSubmissionFileCount = computed(
+  () => selectedTaskFileGroup.value.student_submission?.length ?? 0,
 );
+const selectedTaskStudentMatches = computed(() => {
+  const storedMatches = taskStudentMatchMap.value[String(selectedTaskId.value)] ?? [];
+  if (storedMatches.length) return storedMatches;
+  return buildLocalStudentMatches(taskClassStudents.value, selectedTaskFileGroup.value.student_submission ?? []);
+});
+const studentParseMatchedCount = computed(
+  () => selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched").length,
+);
+const studentParseTotalCount = computed(() => taskClassStudents.value.length);
 const llmProviders = [
   {
     label: "DeepSeek",
@@ -1327,8 +1538,6 @@ const taskStages = [
     title: "题目分析",
     caption: "识别题目结构",
     detail: "识别题号、题型、知识点、难度和期望答案类型，为量规生成提供结构化基础。",
-    content: "题目文本、题型、知识点、难度",
-    output: "题目分析结果",
   },
   {
     key: "build_rubrics",
@@ -1336,8 +1545,6 @@ const taskStages = [
     title: "量规生成",
     caption: "生成评分维度",
     detail: "为每道题生成评分维度、维度分值、得分条件、扣分条件和证据要求。",
-    content: "题目、参考答案、批改说明",
-    output: "评分量规草稿",
   },
   {
     key: "teacher_confirm_rubrics",
@@ -1345,8 +1552,6 @@ const taskStages = [
     title: "量规确认",
     caption: "教师确认标准",
     detail: "教师检查并修改评分量规，确认后才进入正式批改，保证评分标准可控。",
-    content: "评分维度、分值、证据要求",
-    output: "已确认评分量规",
   },
   {
     key: "prepare_students",
@@ -1354,8 +1559,6 @@ const taskStages = [
     title: "学生解析",
     caption: "整理学生作业",
     detail: "从学生提交文件中识别姓名、学号和正文内容，建立学生作业记录。",
-    content: "学生作业文件与正文",
-    output: "学生提交记录",
   },
   {
     key: "extract_answers",
@@ -1363,8 +1566,6 @@ const taskStages = [
     title: "答案抽取",
     caption: "按题匹配答案",
     detail: "从每份学生作业中按题抽取答案，并标记 matched、missing、ambiguous 或 manual_check 等状态。",
-    content: "学生正文、题目列表",
-    output: "按题学生答案",
   },
   {
     key: "extract_evidence",
@@ -1372,8 +1573,6 @@ const taskStages = [
     title: "证据提取",
     caption: "抽取评分依据",
     detail: "围绕每个评分维度提取正向证据、负向证据和置信度，此阶段只找证据，不直接给分。",
-    content: "学生答案、评分量规",
-    output: "结构化评分证据",
   },
   {
     key: "grade_by_question",
@@ -1381,8 +1580,6 @@ const taskStages = [
     title: "AI评分",
     caption: "按题统一评分",
     detail: "同一道题批量批改所有学生答案，主要依据结构化证据和已确认量规评分。",
-    content: "评分量规、学生答案、评分证据",
-    output: "AI 初评分与理由",
   },
   {
     key: "reflect_grading",
@@ -1390,8 +1587,6 @@ const taskStages = [
     title: "反思校准",
     caption: "检查评分一致性",
     detail: "检查总分求和、证据冲突、空答案给分、超分和理由不匹配等异常情况。",
-    content: "AI 评分、量规、证据",
-    output: "异常问题与校准建议",
   },
   {
     key: "teacher_review",
@@ -1399,8 +1594,6 @@ const taskStages = [
     title: "教师复核",
     caption: "确认最终成绩",
     detail: "教师查看证据、修改单题得分和评语，系统保存最终成绩与修订记录。",
-    content: "需复核结果、证据、AI 理由",
-    output: "最终分数与教师修订记录",
   },
   {
     key: "export_results",
@@ -1408,8 +1601,6 @@ const taskStages = [
     title: "结果导出",
     caption: "生成成绩表",
     detail: "基于最终分数生成成绩表、详细评分记录和后续报告导出数据。",
-    content: "最终成绩、复核状态、扣分原因",
-    output: "Excel 成绩表与报告数据",
   },
 ];
 
@@ -1476,11 +1667,28 @@ const activeAssignmentRubricStageStatus = computed(() => {
 
 const taskMaterials = [
   {
+    role: "requirement",
+    title: "作业文件",
+    description: "",
+    multiple: false,
+    accept: ".doc,.docx,.pdf,.txt,.md",
+    readOnly: true,
+  },
+  {
+    role: "reference_answer",
+    title: "答案文件",
+    description: "",
+    multiple: false,
+    accept: ".doc,.docx,.pdf,.txt,.md",
+    readOnly: true,
+  },
+  {
     role: "student_submission",
     title: "学生作业",
     description: "支持连续添加多份学生作业文件",
     multiple: true,
     accept: ".doc,.docx,.pdf,.txt,.md,.zip",
+    readOnly: false,
   },
 ];
 
@@ -1509,9 +1717,11 @@ const LOCAL_CLASSES_KEY = "gradetap.classes";
 const LOCAL_CLASS_STUDENTS_KEY = "gradetap.classStudents";
 const LOCAL_LLM_SETTINGS_KEY = "gradetap.llmSettings";
 const LOCAL_TASK_FILES_KEY = "gradetap.taskFiles";
+const LOCAL_TASK_STUDENT_MATCHES_KEY = "gradetap.taskStudentMatches";
 
 const assignmentFileMap = ref(readLocalAssignmentFileMap());
 const taskFileMap = ref(readLocalTaskFileMap());
+const taskStudentMatchMap = ref(readLocalTaskStudentMatchMap());
 const assignmentRubricMap = ref(readLocalAssignmentRubricMap());
 
 function readLocalList(key) {
@@ -1537,6 +1747,14 @@ function readLocalStudentMap() {
 function readLocalTaskFileMap() {
   try {
     return JSON.parse(window.localStorage.getItem(LOCAL_TASK_FILES_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function readLocalTaskStudentMatchMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_TASK_STUDENT_MATCHES_KEY) ?? "{}");
   } catch {
     return {};
   }
@@ -1586,6 +1804,10 @@ function writeLocalAssignmentRubricMap(map) {
 
 function writeLocalTaskFileMap(map) {
   window.localStorage.setItem(LOCAL_TASK_FILES_KEY, JSON.stringify(map));
+}
+
+function writeLocalTaskStudentMatchMap(map) {
+  window.localStorage.setItem(LOCAL_TASK_STUDENT_MATCHES_KEY, JSON.stringify(map));
 }
 
 function createEmptyAssignmentFileGroup() {
@@ -1696,6 +1918,12 @@ function getAssignmentRubricState(assignmentId) {
   };
 }
 
+function assignmentRubricBound(assignment) {
+  if (!assignment?.id) return false;
+  const localState = assignmentRubricMap.value[String(assignment.id)] ?? {};
+  return Boolean(assignment.rubric_confirmed ?? localState.rubric_confirmed);
+}
+
 function setAssignmentRubricState(assignmentId, state) {
   if (!assignmentId) return;
   const normalizedState = {
@@ -1742,6 +1970,19 @@ function setTaskFileGroup(taskId, group) {
 
 function taskFilesForRole(fileRole) {
   return selectedTaskFileGroup.value[fileRole] ?? [];
+}
+
+function setTaskStudentMatches(taskId, matches) {
+  if (!taskId) return;
+  taskStudentMatchMap.value = {
+    ...taskStudentMatchMap.value,
+    [String(taskId)]: matches,
+  };
+  writeLocalTaskStudentMatchMap(taskStudentMatchMap.value);
+}
+
+function clearTaskStudentMatches(taskId) {
+  setTaskStudentMatches(taskId, []);
 }
 
 function openParsedTextPreview(file) {
@@ -1834,6 +2075,29 @@ async function fetchClassStudents(classId) {
   updateClassStudentCount(classId, classStudents.value.length);
 }
 
+async function fetchTaskClassStudents(task) {
+  taskClassStudents.value = [];
+  if (!task?.class_name) return;
+
+  let classItem = classes.value.find((item) => item.class_name === task.class_name);
+  if (!classItem) {
+    await fetchClasses();
+    classItem = classes.value.find((item) => item.class_name === task.class_name);
+  }
+  if (!classItem?.id) return;
+
+  try {
+    taskClassStudents.value = mergeById(
+      await listClassStudents(classItem.id),
+      readLocalStudents(classItem.id),
+    );
+  } catch {
+    taskClassStudents.value = readLocalStudents(classItem.id);
+  }
+  writeLocalStudents(classItem.id, taskClassStudents.value);
+  updateClassStudentCount(classItem.id, taskClassStudents.value.length);
+}
+
 onMounted(() => {
   loadLlmSettings();
   taskStore.fetchTasks();
@@ -1841,8 +2105,19 @@ onMounted(() => {
   fetchClasses();
 });
 
+onBeforeUnmount(() => {
+  for (const eventSource of activeEventSources) {
+    eventSource.close();
+  }
+  activeEventSources.clear();
+});
+
 function handleMenuSelect(view) {
   activeView.value = view;
+}
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
 }
 
 function returnToList() {
@@ -1877,6 +2152,7 @@ function openTaskDetail(task) {
   activeView.value = "taskDetail";
   fetchTaskFiles(task.id);
   fetchTaskQuestions(task.id);
+  fetchTaskClassStudents(task);
 }
 
 function selectProgressStage(stageKey) {
@@ -2383,10 +2659,21 @@ async function fetchCourseAssignmentQuestions(courseId, assignmentId) {
 
 async function parseSelectedAssignmentFiles() {
   if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  if (selectedAssignmentQuestions.value.length || selectedAssignmentRubricConfirmed.value) {
+    const confirmed = await confirmRestartStep({
+      title: "重新解析作业材料",
+      message:
+        "重新解析成功后，将清空该作业当前的题目分析结果、评分量规和量规确认状态。解析失败时，当前记录会保留。",
+      confirmText: "确认重新解析",
+    });
+    if (!confirmed) return;
+  }
   parseAssignmentFilesLoading.value = true;
   try {
     const result = await parseCourseAssignmentFiles(selectedCourseId.value, selectedCourseAssignmentId.value);
     await fetchCourseAssignmentFiles(selectedCourseId.value, selectedCourseAssignmentId.value);
+    setAssignmentRubricState(selectedCourseAssignmentId.value, createEmptyRubricState());
+    selectedAssignmentRubricStageKey.value = "analyze_questions";
     ElMessage.success(`作业材料解析完成，成功 ${result.parsed_count ?? 0} 个`);
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail ?? "作业材料解析失败，请检查上传文件");
@@ -2395,9 +2682,112 @@ async function parseSelectedAssignmentFiles() {
   }
 }
 
+function resetLlmStream(streamState, stage) {
+  streamState.stage = stage;
+  streamState.status = "连接中";
+  streamState.text = "";
+}
+
+function clearLlmStream(streamState) {
+  streamState.stage = "";
+  streamState.status = "等待开始";
+  streamState.text = "";
+}
+
+function openLlmEventStream(url, streamState, expectedStage) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+
+  eventSource.addEventListener("stage_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== expectedStage) return;
+    streamState.status = "生成中";
+    streamState.text = llmProgressPlaceholder(expectedStage);
+  });
+  eventSource.addEventListener("llm_progress", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== expectedStage) return;
+    streamState.status = "生成中";
+    streamState.text = formatLlmProgress(data);
+  });
+  eventSource.addEventListener("stage_done", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== expectedStage) return;
+    streamState.status = "校验完成";
+    streamState.text = formatLlmProgressDone(expectedStage, data, streamState.text);
+    closeLlmEventStream(eventSource);
+  });
+  eventSource.addEventListener("stage_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== expectedStage) return;
+    streamState.status = "生成失败";
+    if (data.message) {
+      streamState.text += `\n\n[系统] ${data.message}`;
+    }
+    closeLlmEventStream(eventSource);
+  });
+  eventSource.onerror = () => {
+    streamState.status = streamState.text ? "连接中断" : "等待响应";
+  };
+  return eventSource;
+}
+
+function closeLlmEventStream(eventSource) {
+  eventSource.close();
+  activeEventSources.delete(eventSource);
+}
+
+function parseSseData(event) {
+  try {
+    return JSON.parse(event.data || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function llmProgressPlaceholder(stage) {
+  if (stage === "build_rubrics") {
+    return "模型正在生成评分量规，系统会按题号更新进度...";
+  }
+  return "模型正在分析题目，系统会按题号更新识别进度...";
+}
+
+function formatLlmProgress(data) {
+  const numbers = Array.isArray(data.question_numbers) ? data.question_numbers : [];
+  const count = data.recognized_count ?? numbers.length;
+  const action = data.stage === "build_rubrics" ? "已开始生成量规" : "已识别题目";
+  const numberText = numbers.length ? `\n题号：${numbers.join("、")}` : "";
+  return `${action} ${count} 道${numberText}`;
+}
+
+function formatLlmProgressDone(stage, data, fallbackText) {
+  const count = data.question_count;
+  if (typeof count === "number") {
+    return stage === "build_rubrics"
+      ? `评分量规生成完成，共 ${count} 道题，正在渲染结构化结果。`
+      : `题目分析完成，共识别 ${count} 道题，正在渲染结构化结果。`;
+  }
+  return fallbackText || "模型生成完成，正在渲染结构化结果。";
+}
+
 async function runAssignmentQuestionAnalysis() {
   if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  if (selectedAssignmentQuestions.value.length) {
+    const confirmed = await confirmRestartStep({
+      title: "重新分析题目",
+      message:
+        "重新分析成功后，将替换当前题目分析结果，并清空已生成的评分量规与量规确认状态。模型失败或结果校验失败时，当前记录会保留。",
+      confirmText: "确认重新分析",
+    });
+    if (!confirmed) return;
+  }
   assignmentQuestionAnalysisLoading.value = true;
+  resetLlmStream(assignmentLlmStream, "analyze_questions");
+  const eventSource = openLlmEventStream(
+    buildApiUrl(`/courses/${selectedCourseId.value}/assignments/${selectedCourseAssignmentId.value}/events`),
+    assignmentLlmStream,
+    "analyze_questions",
+  );
   try {
     const result = await analyzeCourseAssignmentQuestions(selectedCourseId.value, selectedCourseAssignmentId.value);
     setAssignmentRubricState(selectedCourseAssignmentId.value, {
@@ -2411,13 +2801,30 @@ async function runAssignmentQuestionAnalysis() {
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail ?? "题目分析失败，请确认作业材料已解析且模型设置可用");
   } finally {
+    closeLlmEventStream(eventSource);
     assignmentQuestionAnalysisLoading.value = false;
+    clearLlmStream(assignmentLlmStream);
   }
 }
 
 async function runAssignmentRubricBuild() {
   if (!selectedCourseId.value || !selectedCourseAssignmentId.value) return;
+  if (selectedAssignmentHasRubrics.value) {
+    const confirmed = await confirmRestartStep({
+      title: "重新生成评分量规",
+      message:
+        "重新生成成功后，将替换当前评分量规，并清空量规确认状态。模型失败或结果校验失败时，当前量规会保留。",
+      confirmText: "确认重新生成",
+    });
+    if (!confirmed) return;
+  }
   assignmentRubricBuildLoading.value = true;
+  resetLlmStream(assignmentLlmStream, "build_rubrics");
+  const eventSource = openLlmEventStream(
+    buildApiUrl(`/courses/${selectedCourseId.value}/assignments/${selectedCourseAssignmentId.value}/events`),
+    assignmentLlmStream,
+    "build_rubrics",
+  );
   try {
     const result = await buildCourseAssignmentRubrics(selectedCourseId.value, selectedCourseAssignmentId.value);
     setAssignmentRubricState(selectedCourseAssignmentId.value, {
@@ -2431,7 +2838,9 @@ async function runAssignmentRubricBuild() {
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail ?? "量规生成失败，请先完成题目分析");
   } finally {
+    closeLlmEventStream(eventSource);
     assignmentRubricBuildLoading.value = false;
+    clearLlmStream(assignmentLlmStream);
   }
 }
 
@@ -2584,10 +2993,21 @@ async function fetchTaskQuestions(taskId) {
 
 async function parseSelectedTaskFiles() {
   if (!selectedTaskId.value) return;
+  if (taskQuestions.value.length || selectedTask.value?.status !== "created") {
+    const confirmed = await confirmRestartStep({
+      title: "重新解析任务材料",
+      message:
+        "重新解析成功后，将清空题目分析、评分量规、学生解析、答案抽取、证据、AI评分、反思校准、教师复核与修订记录。解析失败时，当前记录会保留。",
+      confirmText: "确认重新解析",
+    });
+    if (!confirmed) return;
+  }
   parseFilesLoading.value = true;
   try {
     const result = await taskStore.parseFiles(selectedTaskId.value);
     await fetchTaskFiles(selectedTaskId.value);
+    taskQuestions.value = [];
+    clearTaskStudentMatches(selectedTaskId.value);
     selectedProgressStageKey.value = "prepare_students";
     ElMessage.success(`文件解析完成，成功 ${result.parsed_count ?? 0} 个`);
   } catch (error) {
@@ -2597,9 +3017,65 @@ async function parseSelectedTaskFiles() {
   }
 }
 
+async function runStudentPrepare() {
+  if (!selectedTaskId.value) return;
+  if (!taskClassStudents.value.length) {
+    await fetchTaskClassStudents(selectedTask.value);
+  }
+  if (!taskClassStudents.value.length) {
+    ElMessage.warning("该任务班级暂无学生，请先在班级管理中维护学生名单");
+    return;
+  }
+  if (!uploadedStudentSubmissionFileCount.value) {
+    ElMessage.warning("请先上传学生作业文件");
+    return;
+  }
+
+  studentPrepareLoading.value = true;
+  try {
+    const result = await prepareTaskStudents(selectedTaskId.value);
+    setTaskStudentMatches(selectedTaskId.value, result.matches ?? []);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: result.status ?? "students_prepared",
+      current_stage: "extract_answers",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 42),
+    });
+    ElMessage.success(`学生解析完成，匹配 ${result.matched_count ?? studentParseMatchedCount.value}/${result.total_students ?? studentParseTotalCount.value}`);
+  } catch (error) {
+    const localMatches = buildLocalStudentMatches(
+      taskClassStudents.value,
+      selectedTaskFileGroup.value.student_submission ?? [],
+    );
+    setTaskStudentMatches(selectedTaskId.value, localMatches);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "students_prepared",
+      current_stage: "extract_answers",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 42),
+    });
+    ElMessage.warning(error?.response?.data?.detail ?? "后端学生解析失败，已先按本地文件名和解析文本完成匹配预览");
+  } finally {
+    studentPrepareLoading.value = false;
+  }
+}
+
 async function runQuestionAnalysis() {
   if (!selectedTaskId.value) return;
+  if (taskQuestions.value.length) {
+    const confirmed = await confirmRestartStep({
+      title: "重新分析题目",
+      message:
+        "重新分析成功后，将替换当前题目，并清空后续步骤生成的评分量规、学生解析、答案抽取、证据、AI评分、反思校准、教师复核与修订记录。模型失败或结果校验失败时，当前记录会保留。",
+      confirmText: "确认重新分析",
+    });
+    if (!confirmed) return;
+  }
   questionAnalysisLoading.value = true;
+  resetLlmStream(taskLlmStream, "analyze_questions");
+  const eventSource = openLlmEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+    taskLlmStream,
+    "analyze_questions",
+  );
   try {
     const result = await taskStore.analyzeQuestions(selectedTaskId.value);
     taskQuestions.value = result.questions ?? [];
@@ -2612,7 +3088,23 @@ async function runQuestionAnalysis() {
       ElMessage.error(error?.response?.data?.detail ?? "题目分析失败，请确认模型设置和已解析文件");
     }
   } finally {
+    closeLlmEventStream(eventSource);
     questionAnalysisLoading.value = false;
+    clearLlmStream(taskLlmStream);
+  }
+}
+
+async function confirmRestartStep({ title, message, confirmText }) {
+  try {
+    await ElMessageBox.confirm(message, title, {
+      confirmButtonText: confirmText,
+      cancelButtonText: "取消",
+      type: "warning",
+      distinguishCancelAndClose: true,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -2641,7 +3133,87 @@ function mergeTaskFiles(primaryFiles, secondaryFiles) {
   });
 }
 
+function normalizeMatchText(value) {
+  return String(value ?? "").replace(/\s+/g, "").toLowerCase();
+}
+
+function scoreStudentFile(student, file) {
+  const filenameText = normalizeMatchText(file.file_name);
+  const fullText = normalizeMatchText(`${file.file_name}\n${file.parsed_text ?? ""}`);
+  const studentName = normalizeMatchText(student.student_name);
+  const studentNo = normalizeMatchText(student.student_no);
+  let confidence = 0;
+  const reasons = [];
+
+  if (studentNo) {
+    if (filenameText.includes(studentNo)) {
+      confidence = Math.max(confidence, 0.96);
+      reasons.push("文件名包含学号");
+    } else if (fullText.includes(studentNo)) {
+      confidence = Math.max(confidence, 0.9);
+      reasons.push("内容包含学号");
+    }
+  }
+  if (studentName) {
+    if (filenameText.includes(studentName)) {
+      confidence = Math.max(confidence, 0.88);
+      reasons.push("文件名包含姓名");
+    } else if (fullText.includes(studentName)) {
+      confidence = Math.max(confidence, 0.78);
+      reasons.push("内容包含姓名");
+    }
+  }
+  if (studentNo && studentName && fullText.includes(studentNo) && fullText.includes(studentName)) {
+    confidence = Math.max(confidence, 0.98);
+    reasons.push("姓名与学号均匹配");
+  }
+  if (confidence < 0.75) return null;
+  return {
+    file,
+    confidence: Number(confidence.toFixed(2)),
+    reason: reasons.join("、"),
+  };
+}
+
+function buildLocalStudentMatches(students, files) {
+  return students.map((student) => {
+    const candidates = files
+      .map((file) => scoreStudentFile(student, file))
+      .filter(Boolean)
+      .sort((left, right) => right.confidence - left.confidence);
+    const topCandidate = candidates[0] ?? null;
+    const matchStatus = !topCandidate
+      ? "missing"
+      : candidates[1] && topCandidate.confidence - candidates[1].confidence < 0.08
+        ? "ambiguous"
+        : "matched";
+
+    return {
+      student_id: student.id,
+      student_name: student.student_name,
+      student_no: student.student_no ?? "",
+      match_status: matchStatus,
+      matched_file_id: topCandidate?.file.id ?? null,
+      matched_file_name: topCandidate?.file.file_name ?? "",
+      confidence: topCandidate?.confidence ?? 0,
+      reason: topCandidate?.reason || "未在文件名或解析文本中找到学生姓名/学号",
+      candidate_files: candidates.slice(0, 3).map((candidate) => candidate.file.file_name),
+      submission_id: null,
+    };
+  });
+}
+
+function studentMatchStatusMeta(status) {
+  const metaMap = {
+    matched: { label: "已匹配", type: "success" },
+    ambiguous: { label: "需确认", type: "warning" },
+    missing: { label: "未匹配", type: "danger" },
+  };
+  return metaMap[status] ?? { label: "未匹配", type: "info" };
+}
+
 async function handleTaskMaterialChange(material, uploadFile) {
+  if (material.readOnly) return;
   if (!selectedTaskId.value) {
     ElMessage.warning("请先进入任务详情页");
     return;
@@ -2697,6 +3269,7 @@ async function handleTaskMaterialChange(material, uploadFile) {
       current_stage: "analyze_questions",
       progress: Math.max(selectedTask.value?.progress ?? 0, 8),
     });
+    clearTaskStudentMatches(taskId);
     ElMessage.success(`${material.title}已上传`);
   } catch {
     ElMessage.warning(`${material.title}已暂存在本地，后端上传失败`);
@@ -2707,6 +3280,7 @@ async function handleTaskMaterialChange(material, uploadFile) {
 
 async function removeTaskMaterialFile(file) {
   if (!selectedTaskId.value) return;
+  if (file.file_role === "requirement" || file.file_role === "reference_answer") return;
   const taskId = selectedTaskId.value;
   const currentGroup = getTaskFileGroup(taskId);
   const nextRoleFiles = currentGroup[file.file_role].filter((item) => item.id !== file.id);
@@ -2714,6 +3288,7 @@ async function removeTaskMaterialFile(file) {
     ...currentGroup,
     [file.file_role]: nextRoleFiles,
   });
+  clearTaskStudentMatches(taskId);
 
   if (typeof file.id === "string" && file.id.startsWith("local-")) {
     ElMessage.success("文件已移除");

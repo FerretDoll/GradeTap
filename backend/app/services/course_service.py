@@ -33,6 +33,7 @@ from app.schemas.course import (
 from app.schemas.question import QuestionCreate
 from app.services.file_parse_service import parse_document_text
 from app.services.question_analyzer_service import question_analyzer_service
+from app.services.progress_event_service import progress_event_service
 from app.services.rubric_builder_service import rubric_builder_service
 
 
@@ -284,6 +285,11 @@ class CourseService:
             if not parsed_files:
                 raise HTTPException(status_code=400, detail="No supported files could be parsed")
 
+            self._clear_assignment_question_records(db, assignment_id)
+            assignment.questions_payload = None
+            assignment.rubrics_payload = None
+            assignment.rubric_confirmed = False
+            assignment.rubric_confirmed_at = None
             db.commit()
             return {
                 "course_id": course_id,
@@ -305,18 +311,36 @@ class CourseService:
             if not requirement_text.strip():
                 raise HTTPException(status_code=400, detail="请先解析作业文件，再进行题目分析")
 
+            progress_channel = f"assignment:{course_id}:{assignment_id}"
+            progress_event_service.publish(progress_channel, "stage_started", {"stage": "analyze_questions"})
             try:
                 question_payloads = question_analyzer_service.analyze_questions(
                     task_id=0,
                     requirement_text=requirement_text,
                     reference_answer_text=reference_answer_text,
                     grading_instruction=assignment.description,
+                    progress_channel=progress_channel,
                 )
             except ValidationError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "analyze_questions", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=f"题目分析字段不完整或不合法：{exc}") from exc
             except ValueError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "analyze_questions", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=f"题目分析结果不是合法 JSON：{exc}") from exc
             except RuntimeError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "analyze_questions", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
 
             questions = [question.model_dump(mode="json") for question in question_payloads]
@@ -327,7 +351,7 @@ class CourseService:
             assignment.rubric_confirmed_at = None
             db.commit()
             db.refresh(assignment)
-            return {
+            result = {
                 "course_id": course_id,
                 "assignment_id": assignment_id,
                 "stage": "analyze_questions",
@@ -335,6 +359,12 @@ class CourseService:
                 "questions": self._assignment_questions_payload(db, assignment_id),
                 "rubric_confirmed": assignment.rubric_confirmed,
             }
+            progress_event_service.publish(
+                progress_channel,
+                "stage_done",
+                {"stage": "analyze_questions", "question_count": len(questions)},
+            )
+            return result
 
     def build_assignment_rubrics(self, course_id: int, assignment_id: int) -> dict:
         self._ensure_assignment_schema()
@@ -347,6 +377,8 @@ class CourseService:
                 raise HTTPException(status_code=400, detail="请先完成题目分析，再生成评分量规")
             files = self._assignment_files(db, assignment_id)
             reference_answer_text = self._combined_parsed_text(files, FileRole.REFERENCE_ANSWER)
+            progress_channel = f"assignment:{course_id}:{assignment_id}"
+            progress_event_service.publish(progress_channel, "stage_started", {"stage": "build_rubrics"})
             try:
                 questions = [
                     QuestionCreate(
@@ -362,12 +394,28 @@ class CourseService:
                     questions=questions,
                     reference_answer_text=reference_answer_text,
                     grading_instruction=assignment.description,
+                    progress_channel=progress_channel,
                 )
             except ValidationError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "build_rubrics", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=f"量规字段不完整或不合法：{exc}") from exc
             except ValueError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "build_rubrics", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=f"量规生成结果不是合法 JSON：{exc}") from exc
             except RuntimeError as exc:
+                progress_event_service.publish(
+                    progress_channel,
+                    "stage_failed",
+                    {"stage": "build_rubrics", "message": str(exc)},
+                )
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
 
             rubrics = [question.model_dump(mode="json") for question in rubric_questions]
@@ -378,7 +426,7 @@ class CourseService:
             assignment.rubric_confirmed_at = None
             db.commit()
             db.refresh(assignment)
-            return {
+            result = {
                 "course_id": course_id,
                 "assignment_id": assignment_id,
                 "stage": "build_rubrics",
@@ -387,6 +435,12 @@ class CourseService:
                 "rubrics": self._assignment_questions_payload(db, assignment_id),
                 "rubric_confirmed": assignment.rubric_confirmed,
             }
+            progress_event_service.publish(
+                progress_channel,
+                "stage_done",
+                {"stage": "build_rubrics", "question_count": len(rubrics)},
+            )
+            return result
 
     def list_assignment_questions(self, course_id: int, assignment_id: int) -> dict:
         self._ensure_assignment_schema()

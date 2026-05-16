@@ -3,16 +3,20 @@ from __future__ import annotations
 from typing import Union
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
 from app.schemas.file import UploadedFileRead
 from app.schemas.grading import GradeByQuestionRequest, GradeByQuestionResponse
 from app.schemas.question import QuestionRead
+from app.schemas.answer import StudentPrepareResponse
 from app.schemas.task import GradingTaskCreate, GradingTaskRead
 from app.services.file_parse_service import file_parse_service
 from app.services.file_service import file_service
 from app.services.grading_service import grading_service
+from app.services.progress_event_service import progress_event_service
 from app.services.question_analyzer_service import question_analyzer_service
+from app.services.student_prepare_service import student_prepare_service
 from app.services.task_service import task_service
 
 router = APIRouter()
@@ -78,16 +82,26 @@ def list_task_questions(task_id: int) -> list[QuestionRead]:
     return question_analyzer_service.list_task_questions(task_id)
 
 
+@router.get("/{task_id}/events")
+def stream_task_events(task_id: int) -> StreamingResponse:
+    task_service.ensure_task_exists(task_id)
+    return StreamingResponse(
+        progress_event_service.stream(f"task:{task_id}"),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/{task_id}/build-rubrics")
 def build_rubrics(task_id: int) -> dict[str, Union[str, int]]:
     task_service.ensure_task_exists(task_id)
     return {"task_id": task_id, "status": "queued", "stage": "build_rubrics"}
 
 
-@router.post("/{task_id}/prepare-students")
-def prepare_students(task_id: int) -> dict[str, Union[str, int]]:
+@router.post("/{task_id}/prepare-students", response_model=StudentPrepareResponse)
+def prepare_students(task_id: int) -> StudentPrepareResponse:
     task_service.ensure_task_exists(task_id)
-    return {"task_id": task_id, "status": "queued", "stage": "prepare_students"}
+    return student_prepare_service.prepare_students(task_id)
 
 
 @router.post("/{task_id}/extract-answers")

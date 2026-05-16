@@ -10,6 +10,7 @@ from app.db.models import GradingTask, UploadedFile
 from app.db.session import SessionLocal
 from app.models.file import FileRole
 from app.models.task import GradingTaskStatus
+from app.services.question_analyzer_service import question_analyzer_service
 
 
 SUPPORTED_PARSE_SUFFIXES = {".docx", ".pdf", ".txt", ".md"}
@@ -67,6 +68,7 @@ class FileParseService:
             if not parsed_files:
                 raise HTTPException(status_code=400, detail="No supported files could be parsed")
 
+            question_analyzer_service._clear_after_question_analysis(db, task_id)
             task.status = GradingTaskStatus.PARSED
             db.commit()
 
