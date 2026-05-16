@@ -164,6 +164,7 @@ class GradingTask(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_name: Mapped[str] = mapped_column(String(255), nullable=False)
     course_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    assignment_name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     class_name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[GradingTaskStatus] = mapped_column(
         Enum(GradingTaskStatus, values_callable=enum_values),

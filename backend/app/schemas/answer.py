@@ -70,3 +70,36 @@ class StudentAnswerRead(StudentAnswerBase):
     student_submission_id: int
     created_at: datetime
     updated_at: datetime
+
+
+class StudentAnswerExtractionProgress(BaseModel):
+    submission_id: int
+    student_name: str
+    student_no: str = ""
+    source_file_id: Optional[int] = None
+    source_file_name: str = ""
+    content: str = ""
+    total_questions: int = 0
+    completed_questions: int = 0
+    status: Literal["pending", "processing", "done", "failed"] = "pending"
+    error_message: str = ""
+    answers: list[StudentAnswerRead] = Field(default_factory=list)
+
+
+class AnswerExtractionSnapshot(BaseModel):
+    task_id: int
+    status: str
+    stage: str = "extract_answers"
+    total_questions: int
+    total_students: int
+    completed_students: int
+    students: list[StudentAnswerExtractionProgress]
+
+
+class AnswerExtractionStartResponse(BaseModel):
+    task_id: int
+    status: str = "queued"
+    stage: str = "extract_answers"
+    total_questions: int
+    total_students: int
+    max_workers: int

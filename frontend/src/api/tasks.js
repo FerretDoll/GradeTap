@@ -56,3 +56,15 @@ export async function prepareTaskStudents(taskId) {
   const response = await apiClient.post(`/tasks/${taskId}/prepare-students`);
   return response.data;
 }
+
+export async function getTaskAnswerExtraction(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/extract-answers`);
+  return response.data;
+}
+
+export async function startTaskAnswerExtraction(taskId, maxWorkers = 3, force = false) {
+  const response = await apiClient.post(`/tasks/${taskId}/extract-answers`, null, {
+    params: { max_workers: maxWorkers, force },
+  });
+  return response.data;
+}

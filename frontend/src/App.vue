@@ -216,12 +216,17 @@
                     :class="{
                       'progress-stage-detail--analysis': activeProgressStage.key === 'analyze_questions',
                       'progress-stage-detail--student-parse': activeProgressStage.key === 'prepare_students',
+                      'progress-stage-detail--answer-extract': activeProgressStage.key === 'extract_answers',
                     }"
                   >
                     <div class="stage-detail-title">
                       <div v-if="activeProgressStage.key === 'prepare_students'">
                         <span class="section-kicker">Match Summary</span>
                         <h3>{{ studentParseMatchedCount }}/{{ studentParseTotalCount }} 名学生已匹配</h3>
+                      </div>
+                      <div v-else-if="activeProgressStage.key === 'extract_answers'">
+                        <span class="section-kicker">Answer Extract</span>
+                        <h3>{{ answerExtractionCompletedCount }}/{{ answerExtractionEligibleCount }} 名学生已抽取</h3>
                       </div>
                       <div v-else-if="activeProgressStage.key === 'analyze_questions'">
                         <span class="section-kicker">{{ activeProgressStage.eyebrow }}</span>
@@ -232,10 +237,13 @@
                         <el-tag v-if="activeProgressStage.key === 'prepare_students'" effect="plain">
                           {{ uploadedStudentSubmissionFileCount }} 个学生作业文件
                         </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'extract_answers'" effect="plain">
+                          {{ taskQuestions.length }} 道题
+                        </el-tag>
                         <template v-if="activeProgressStage.key === 'analyze_questions'">
                           <el-button
                             size="small"
-                            type="primary"
+                            :type="taskQuestions.length ? 'warning' : 'primary'"
                             :loading="questionAnalysisLoading"
                             @click="runQuestionAnalysis"
                           >
@@ -245,11 +253,32 @@
                         <template v-else-if="activeProgressStage.key === 'prepare_students'">
                           <el-button
                             size="small"
-                            type="primary"
+                            :type="selectedTaskStudentMatches.length ? 'warning' : 'primary'"
                             :loading="studentPrepareLoading"
                             @click="runStudentPrepare"
                           >
                             {{ selectedTaskStudentMatches.length ? "重新解析学生" : "开始学生解析" }}
+                          </el-button>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'extract_answers'">
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :disabled="!uploadedStudentSubmissionFileCount"
+                            :loading="answerExtractionLoading"
+                            @click="runAnswerExtraction(false)"
+                          >
+                            {{ answerExtractionHasAnswers ? "继续抽取答案" : "开始答案抽取" }}
+                          </el-button>
+                          <el-button
+                            v-if="answerExtractionHasAnswers"
+                            size="small"
+                            type="warning"
+                            :disabled="!uploadedStudentSubmissionFileCount"
+                            :loading="answerExtractionLoading"
+                            @click="runAnswerExtraction(true)"
+                          >
+                            重新抽取答案
                           </el-button>
                         </template>
                       </div>
@@ -337,6 +366,108 @@
                         v-else
                         class="student-parse-empty"
                         description="请先维护班级学生并上传学生作业文件"
+                        :image-size="72"
+                      />
+                    </div>
+                    <div v-else-if="activeProgressStage.key === 'extract_answers'" class="answer-extract-panel">
+                      <div v-if="answerExtractionEligibleCount" class="answer-extract-grid">
+                        <div class="answer-student-list">
+                          <button
+                            v-for="student in answerExtractionStudents"
+                            :key="student.submission_id"
+                            type="button"
+                            class="answer-student-card"
+                            :class="{
+                              active: student.submission_id === selectedAnswerSubmissionId,
+                              done: studentAnswerExtractionCompleted(student),
+                              running: student.status === 'processing',
+                            }"
+                            @click="selectAnswerStudent(student.submission_id)"
+                          >
+                            <div>
+                              <strong>{{ student.student_name }}</strong>
+                              <span>{{ student.student_no || "未填写学号" }}</span>
+                            </div>
+                            <div v-if="studentAnswerExtractionFinalized(student)" class="answer-student-counts">
+                              <span class="matched">已匹配 {{ studentAnswerCounts(student).matched }} 题</span>
+                              <span class="unmatched">未匹配 {{ studentAnswerCounts(student).unmatched }} 题</span>
+                            </div>
+                            <el-progress
+                              :percentage="studentAnswerProgress(student)"
+                              :stroke-width="6"
+                              :show-text="false"
+                              :class="{ 'progress-bar--running': student.status === 'processing' }"
+                            />
+                            <small>{{ student.completed_questions }}/{{ student.total_questions }} 题</small>
+                          </button>
+                        </div>
+                        <div
+                          class="answer-list-view"
+                          @mouseenter="setAnswerInteractionArea('question-list')"
+                          @mouseleave="clearAnswerInteractionArea('question-list')"
+                        >
+                          <div class="answer-column-heading">
+                            <strong>作业题目</strong>
+                            <el-tag effect="plain">{{ selectedAnswerStudentAnswers.length }} 题</el-tag>
+                          </div>
+                          <div ref="answerQuestionListRef" class="answer-card-list">
+                            <article
+                              v-for="question in taskQuestions"
+                              :key="question.id"
+                              class="answer-card"
+                              :data-answer-question-id="question.id"
+                              :class="{
+                                active: question.id === activeAnswerQuestionId,
+                                matched: answerQuestionFinalized(question.id) && answerForQuestion(question.id)?.extraction_status === 'matched',
+                                unmatched: answerQuestionFinalized(question.id) && answerForQuestion(question.id)?.extraction_status !== 'matched',
+                              }"
+                              @click="focusAnswerQuestion(question.id, 'question-list')"
+                              @mouseenter="hoveredAnswerQuestionId = question.id"
+                              @mouseleave="hoveredAnswerQuestionId = null"
+                            >
+                              <div>
+                                <strong>{{ question.question_number }}. {{ question.content }}</strong>
+                              </div>
+                            </article>
+                          </div>
+                        </div>
+                        <div
+                          ref="answerSourceViewRef"
+                          class="answer-source-view"
+                          @mouseenter="setAnswerInteractionArea('source')"
+                          @mouseleave="clearAnswerInteractionArea('source')"
+                        >
+                          <div class="answer-column-heading">
+                            <strong>{{ selectedAnswerStudent?.source_file_name || "学生作业原文" }}</strong>
+                            <el-tag effect="plain">{{ selectedAnswerStudent?.content?.length ?? 0 }} 字</el-tag>
+                          </div>
+                          <div class="answer-source-text">
+                            <template v-for="part in highlightedSubmissionParts" :key="part.key">
+                              <mark
+                                v-if="part.questionId"
+                                class="answer-highlight"
+                                :data-source-question-id="part.questionId"
+                                :class="{
+                                  active: part.questionId === activeAnswerQuestionId,
+                                }"
+                                role="button"
+                                tabindex="0"
+                                @click="focusAnswerQuestion(part.questionId, 'source')"
+                                @keydown.enter.prevent="focusAnswerQuestion(part.questionId, 'source')"
+                                @mouseenter="hoveredAnswerQuestionId = part.questionId"
+                                @mouseleave="hoveredAnswerQuestionId = null"
+                              >
+                                {{ part.text }}
+                              </mark>
+                              <span v-else>{{ part.text }}</span>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                      <el-empty
+                        v-else
+                        class="student-parse-empty"
+                        description="只有学生解析中已匹配作业的学生才能进入答案抽取"
                         :image-size="72"
                       />
                     </div>
@@ -651,7 +782,7 @@
                                 <el-button
                                   v-if="activeAssignmentRubricStage.key === 'analyze_questions'"
                                   size="small"
-                                  type="primary"
+                                  :type="selectedAssignmentQuestions.length ? 'warning' : 'primary'"
                                   :loading="assignmentQuestionAnalysisLoading"
                                   @click="runAssignmentQuestionAnalysis"
                                 >
@@ -660,7 +791,7 @@
                                 <el-button
                                   v-else-if="activeAssignmentRubricStage.key === 'build_rubrics'"
                                   size="small"
-                                  type="primary"
+                                  :type="selectedAssignmentHasRubrics ? 'warning' : 'primary'"
                                   :disabled="!selectedAssignmentQuestions.length"
                                   :loading="assignmentRubricBuildLoading"
                                   @click="runAssignmentRubricBuild"
@@ -1095,13 +1226,28 @@
 
   <el-dialog v-model="taskDialogVisible" :title="editingTaskId ? '编辑批改任务' : '新建批改任务'" width="600px" :lock-scroll="false" class="task-dialog">
     <el-form :model="form" label-position="top">
+      <el-form-item label="任务名称">
+        <el-input v-model="form.task_name" placeholder="SQL 数据库第 13 周作业批改" />
+      </el-form-item>
       <div class="form-grid">
-        <el-form-item label="作业名称">
-          <el-input v-model="form.task_name" placeholder="SQL 数据库第 13 周作业" />
-        </el-form-item>
         <el-form-item label="课程名称">
-          <el-select v-model="form.course_name" placeholder="请选择课程" class="form-control">
+          <el-select v-model="form.course_name" placeholder="请选择课程" class="form-control" @change="handleTaskCourseChange">
             <el-option v-for="course in courses" :key="course.id" :label="course.course_name" :value="course.course_name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.course_name" label="作业名称">
+          <el-select
+            v-model="form.assignment_name"
+            placeholder="请选择作业"
+            class="form-control"
+            :loading="taskAssignmentLoading"
+          >
+            <el-option
+              v-for="assignment in taskAssignmentOptions"
+              :key="assignment.id"
+              :label="assignment.assignment_name"
+              :value="assignment.assignment_name"
+            />
           </el-select>
         </el-form-item>
       </div>
@@ -1217,7 +1363,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Back,
@@ -1269,9 +1415,11 @@ import {
 import {
   deleteTask as deleteTaskApi,
   deleteTaskFile,
+  getTaskAnswerExtraction,
   listTaskQuestions,
   listTaskFiles,
   prepareTaskStudents,
+  startTaskAnswerExtraction,
   uploadTaskFile,
 } from "./api/tasks";
 import {
@@ -1303,8 +1451,11 @@ const assignmentDialogVisible = ref(false);
 const studentDialogVisible = ref(false);
 const parsedPreviewVisible = ref(false);
 const parsedPreviewFile = ref(null);
+const answerQuestionListRef = ref(null);
+const answerSourceViewRef = ref(null);
 const submitting = ref(false);
 const assignmentLoading = ref(false);
+const taskAssignmentLoading = ref(false);
 const studentLoading = ref(false);
 const importingStudents = ref(false);
 const studentImportUploadRef = ref(null);
@@ -1314,6 +1465,7 @@ const taskFileDeletingId = ref(null);
 const assignmentFileDeletingId = ref(null);
 const parseFilesLoading = ref(false);
 const studentPrepareLoading = ref(false);
+const answerExtractionLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
 const assignmentQuestionAnalysisLoading = ref(false);
@@ -1340,6 +1492,7 @@ const llmHealth = reactive({
 const form = reactive({
   task_name: "",
   course_name: "",
+  assignment_name: "",
   class_name: "",
   grading_instruction: "",
 });
@@ -1377,10 +1530,15 @@ const llmForm = reactive({
 
 const courses = ref([]);
 const courseAssignments = ref([]);
+const taskAssignmentOptions = ref([]);
 const classes = ref([]);
 const classStudents = ref([]);
 const taskClassStudents = ref([]);
 const taskQuestions = ref([]);
+const taskAnswerExtraction = ref(null);
+const selectedAnswerSubmissionId = ref(null);
+const hoveredAnswerQuestionId = ref(null);
+const answerInteractionArea = ref(null);
 const activeEventSources = new Set();
 const taskLlmStream = reactive({
   stage: "",
@@ -1448,6 +1606,45 @@ const studentParseMatchedCount = computed(
   () => selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched").length,
 );
 const studentParseTotalCount = computed(() => taskClassStudents.value.length);
+const answerExtractionStudents = computed(() => {
+  const currentFileIds = new Set(
+    (selectedTaskFileGroup.value.student_submission ?? []).map((file) => String(file.id)),
+  );
+  const persistedStudents = (taskAnswerExtraction.value?.students ?? []).filter(
+    (student) => !student.source_file_id || currentFileIds.has(String(student.source_file_id)),
+  );
+  const previewStudents = buildPreviewAnswerExtractionStudents();
+  const seenKeys = new Set(persistedStudents.map((student) => answerStudentKey(student)));
+  const mergedPreviewStudents = previewStudents.filter((student) => {
+    const key = answerStudentKey(student);
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+  return [...persistedStudents, ...mergedPreviewStudents];
+});
+const answerExtractionEligibleCount = computed(() => answerExtractionStudents.value.length);
+const answerExtractionCompletedCount = computed(
+  () => answerExtractionStudents.value.filter((student) => student.status === "done").length,
+);
+const answerExtractionHasAnswers = computed(() =>
+  answerExtractionStudents.value.some((student) => (student.answers ?? []).length > 0),
+);
+const selectedAnswerStudent = computed(() => {
+  if (!answerExtractionStudents.value.length) return null;
+  return (
+    answerExtractionStudents.value.find((student) => student.submission_id === selectedAnswerSubmissionId.value)
+    ?? answerExtractionStudents.value[0]
+  );
+});
+const selectedAnswerStudentAnswers = computed(() => selectedAnswerStudent.value?.answers ?? []);
+const highlightedSubmissionParts = computed(() =>
+  buildHighlightedSubmissionParts(
+    selectedAnswerStudent.value,
+    selectedAnswerStudentAnswers.value,
+  ),
+);
+const activeAnswerQuestionId = computed(() => hoveredAnswerQuestionId.value);
 const llmProviders = [
   {
     label: "DeepSeek",
@@ -2051,6 +2248,22 @@ async function fetchCourseAssignments(courseId) {
   updateCourseAssignmentCount(courseId, courseAssignments.value.length);
 }
 
+async function fetchTaskAssignmentOptions(courseName) {
+  taskAssignmentOptions.value = [];
+  const course = courses.value.find((item) => item.course_name === courseName);
+  if (!course?.id) return;
+
+  taskAssignmentLoading.value = true;
+  try {
+    const remoteAssignments = await listCourseAssignments(course.id);
+    taskAssignmentOptions.value = mergeById(remoteAssignments, readLocalAssignments(course.id));
+  } catch {
+    taskAssignmentOptions.value = readLocalAssignments(course.id);
+  } finally {
+    taskAssignmentLoading.value = false;
+  }
+}
+
 async function fetchClasses() {
   try {
     const remoteClasses = await listClasses();
@@ -2137,10 +2350,17 @@ function openCreateTask() {
   Object.assign(form, {
     task_name: "",
     course_name: "",
+    assignment_name: "",
     class_name: "",
     grading_instruction: "",
   });
+  taskAssignmentOptions.value = [];
   taskDialogVisible.value = true;
+}
+
+function handleTaskCourseChange() {
+  form.assignment_name = "";
+  fetchTaskAssignmentOptions(form.course_name);
 }
 
 function openTaskDetail(task) {
@@ -2153,6 +2373,7 @@ function openTaskDetail(task) {
   fetchTaskFiles(task.id);
   fetchTaskQuestions(task.id);
   fetchTaskClassStudents(task);
+  fetchTaskAnswerExtraction(task.id);
 }
 
 function selectProgressStage(stageKey) {
@@ -2168,19 +2389,25 @@ function editTask(task) {
   Object.assign(form, {
     task_name: task.task_name,
     course_name: task.course_name,
+    assignment_name: task.assignment_name ?? "",
     class_name: task.class_name,
     grading_instruction: task.grading_instruction,
   });
+  fetchTaskAssignmentOptions(task.course_name);
   taskDialogVisible.value = true;
 }
 
 function submitTask() {
   if (!form.task_name.trim()) {
-    ElMessage.warning("请填写作业名称");
+    ElMessage.warning("请填写任务名称");
     return;
   }
   if (!form.course_name) {
     ElMessage.warning("请选择课程");
+    return;
+  }
+  if (!form.assignment_name) {
+    ElMessage.warning("请选择作业");
     return;
   }
   if (!form.class_name) {
@@ -2200,9 +2427,11 @@ function submitTask() {
   Object.assign(form, {
     task_name: "",
     course_name: "",
+    assignment_name: "",
     class_name: "",
     grading_instruction: "",
   });
+  taskAssignmentOptions.value = [];
   editingTaskId.value = null;
   taskDialogVisible.value = false;
   selectedTaskId.value = task?.id ?? null;
@@ -2732,6 +2961,67 @@ function openLlmEventStream(url, streamState, expectedStage) {
   return eventSource;
 }
 
+function openAnswerExtractionEventStream(url) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+
+  eventSource.addEventListener("stage_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    answerExtractionLoading.value = true;
+    ensureAnswerExtractionSnapshot(data.total_questions ?? taskQuestions.value.length);
+  });
+  eventSource.addEventListener("student_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    updateAnswerStudentProgress(data, { status: "processing" });
+  });
+  eventSource.addEventListener("student_question_progress", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    updateAnswerStudentProgress(data, { status: "processing" });
+  });
+  eventSource.addEventListener("student_done", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    updateAnswerStudentProgress(data, {
+      status: "done",
+      completed_questions: data.total_questions ?? taskQuestions.value.length,
+    });
+  });
+  eventSource.addEventListener("student_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    updateAnswerStudentProgress(data, { status: "failed", error_message: data.message ?? "抽取失败" });
+  });
+  eventSource.addEventListener("stage_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    await fetchTaskQuestions(selectedTaskId.value);
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "answers_extracted",
+      current_stage: "extract_evidence",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 58),
+    });
+    answerExtractionLoading.value = false;
+    closeLlmEventStream(eventSource);
+    ElMessage.success("答案抽取完成");
+  });
+  eventSource.addEventListener("stage_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    answerExtractionLoading.value = false;
+    closeLlmEventStream(eventSource);
+    ElMessage.error(data.message || "答案抽取失败");
+  });
+  eventSource.onerror = () => {
+    if (answerExtractionLoading.value) return;
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
 function closeLlmEventStream(eventSource) {
   eventSource.close();
   activeEventSources.delete(eventSource);
@@ -2991,6 +3281,26 @@ async function fetchTaskQuestions(taskId) {
   }
 }
 
+async function fetchTaskAnswerExtraction(taskId) {
+  if (!taskId) {
+    taskAnswerExtraction.value = null;
+    selectedAnswerSubmissionId.value = null;
+    return;
+  }
+  try {
+    const snapshot = await getTaskAnswerExtraction(taskId);
+    taskAnswerExtraction.value = snapshot;
+    if (!selectedAnswerSubmissionId.value && snapshot.students?.length) {
+      selectedAnswerSubmissionId.value = snapshot.students[0].submission_id;
+    } else if (!selectedAnswerSubmissionId.value && answerExtractionStudents.value.length) {
+      selectedAnswerSubmissionId.value = answerExtractionStudents.value[0].submission_id;
+    }
+  } catch {
+    taskAnswerExtraction.value = null;
+    selectedAnswerSubmissionId.value = answerExtractionStudents.value[0]?.submission_id ?? null;
+  }
+}
+
 async function parseSelectedTaskFiles() {
   if (!selectedTaskId.value) return;
   if (taskQuestions.value.length || selectedTask.value?.status !== "created") {
@@ -3008,6 +3318,8 @@ async function parseSelectedTaskFiles() {
     await fetchTaskFiles(selectedTaskId.value);
     taskQuestions.value = [];
     clearTaskStudentMatches(selectedTaskId.value);
+    taskAnswerExtraction.value = null;
+    selectedAnswerSubmissionId.value = null;
     selectedProgressStageKey.value = "prepare_students";
     ElMessage.success(`文件解析完成，成功 ${result.parsed_count ?? 0} 个`);
   } catch (error) {
@@ -3035,6 +3347,8 @@ async function runStudentPrepare() {
   try {
     const result = await prepareTaskStudents(selectedTaskId.value);
     setTaskStudentMatches(selectedTaskId.value, result.matches ?? []);
+    taskAnswerExtraction.value = null;
+    selectedAnswerSubmissionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
       status: result.status ?? "students_prepared",
       current_stage: "extract_answers",
@@ -3047,6 +3361,8 @@ async function runStudentPrepare() {
       selectedTaskFileGroup.value.student_submission ?? [],
     );
     setTaskStudentMatches(selectedTaskId.value, localMatches);
+    taskAnswerExtraction.value = null;
+    selectedAnswerSubmissionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
       status: "students_prepared",
       current_stage: "extract_answers",
@@ -3055,6 +3371,85 @@ async function runStudentPrepare() {
     ElMessage.warning(error?.response?.data?.detail ?? "后端学生解析失败，已先按本地文件名和解析文本完成匹配预览");
   } finally {
     studentPrepareLoading.value = false;
+  }
+}
+
+async function runAnswerExtraction(force = false) {
+  if (!selectedTaskId.value) return;
+  if (!uploadedStudentSubmissionFileCount.value) {
+    ElMessage.warning("请先上传学生作业文件");
+    return;
+  }
+
+  const hasMatchedSubmissions = await ensureAnswerExtractionSubmissions();
+  if (!hasMatchedSubmissions) {
+    ElMessage.warning("当前没有匹配成功的学生作业，无法进入答案抽取");
+    return;
+  }
+  if (force && answerExtractionHasAnswers.value) {
+    const confirmed = await confirmRestartStep({
+      title: "重新抽取答案",
+      message: "重新抽取会替换当前学生答案，并清空后续证据、AI评分、反思校准和教师复核记录。",
+      confirmText: "确认重新抽取",
+    });
+    if (!confirmed) return;
+  }
+
+  answerExtractionLoading.value = true;
+  const eventSource = openAnswerExtractionEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+  );
+  try {
+    const started = await startTaskAnswerExtraction(selectedTaskId.value, 3, force);
+    if (!taskQuestions.value.length) {
+      await fetchTaskQuestions(selectedTaskId.value);
+    }
+    taskAnswerExtraction.value = {
+      task_id: selectedTaskId.value,
+      status: "students_prepared",
+      stage: "extract_answers",
+      total_questions: started.total_questions,
+      total_students: started.total_students,
+      completed_students: 0,
+      students: force
+        ? buildInitialAnswerExtractionStudents(started.total_questions)
+        : answerExtractionStudents.value,
+    };
+    selectedAnswerSubmissionId.value = taskAnswerExtraction.value.students[0]?.submission_id ?? null;
+    selectedProgressStageKey.value = "extract_answers";
+    taskStore.updateTask(selectedTaskId.value, {
+      current_stage: "extract_answers",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 48),
+    });
+  } catch (error) {
+    answerExtractionLoading.value = false;
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "答案抽取启动失败，请确认前一步已有匹配成功的学生作业");
+  }
+}
+
+async function ensureAnswerExtractionSubmissions() {
+  await fetchTaskAnswerExtraction(selectedTaskId.value);
+  if (answerExtractionStudents.value.length) return true;
+
+  if (!taskClassStudents.value.length) {
+    await fetchTaskClassStudents(selectedTask.value);
+  }
+  if (!taskClassStudents.value.length) return false;
+
+  try {
+    const result = await prepareTaskStudents(selectedTaskId.value);
+    setTaskStudentMatches(selectedTaskId.value, result.matches ?? []);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: result.status ?? "students_prepared",
+      current_stage: "extract_answers",
+      progress: Math.max(selectedTask.value?.progress ?? 0, 42),
+    });
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
+    return answerExtractionStudents.value.length > 0;
+  } catch (error) {
+    ElMessage.warning(error?.response?.data?.detail ?? "学生解析未完成，暂时没有可抽取答案的学生作业");
+    return false;
   }
 }
 
@@ -3210,6 +3605,271 @@ function studentMatchStatusMeta(status) {
     missing: { label: "未匹配", type: "danger" },
   };
   return metaMap[status] ?? { label: "未匹配", type: "info" };
+}
+
+function answerStatusMeta(status) {
+  const metaMap = {
+    matched: { label: "已匹配", type: "success" },
+    missing: { label: "缺失", type: "warning" },
+    ambiguous: { label: "不确定", type: "warning" },
+    manual_check: { label: "需检查", type: "danger" },
+    extract_error: { label: "失败", type: "danger" },
+  };
+  return metaMap[status] ?? { label: "待抽取", type: "info" };
+}
+
+function selectAnswerStudent(submissionId) {
+  selectedAnswerSubmissionId.value = submissionId;
+  hoveredAnswerQuestionId.value = null;
+  scrollSelectedAnswerToFirstHighlight();
+}
+
+function setAnswerInteractionArea(area) {
+  answerInteractionArea.value = area;
+}
+
+function clearAnswerInteractionArea(area) {
+  if (answerInteractionArea.value === area) {
+    answerInteractionArea.value = null;
+  }
+}
+
+function shouldSkipAnswerAutoScroll(area, origin) {
+  return origin === area || answerInteractionArea.value === area;
+}
+
+async function focusAnswerQuestion(questionId, origin = "auto") {
+  hoveredAnswerQuestionId.value = questionId;
+  await nextTick();
+  if (!shouldSkipAnswerAutoScroll("question-list", origin)) {
+    scrollAnswerQuestionListToQuestion(questionId);
+  }
+  if (!shouldSkipAnswerAutoScroll("source", origin)) {
+    scrollAnswerSourceToQuestion(questionId);
+  }
+}
+
+async function scrollSelectedAnswerToFirstHighlight() {
+  await nextTick();
+  const firstQuestionId = highlightedSubmissionParts.value.find((part) => part.questionId)?.questionId;
+  if (!shouldSkipAnswerAutoScroll("source", "student-list")) {
+    scrollAnswerSourceToQuestion(firstQuestionId, { fallbackToTop: true });
+  }
+}
+
+function scrollAnswerQuestionListToQuestion(questionId) {
+  const container = answerQuestionListRef.value;
+  if (!container || !questionId) return;
+
+  const target = Array.from(container.querySelectorAll("[data-answer-question-id]")).find(
+    (element) => String(element.dataset.answerQuestionId) === String(questionId),
+  );
+  target?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+}
+
+function scrollAnswerSourceToQuestion(questionId, options = {}) {
+  const container = answerSourceViewRef.value;
+  if (!container) return;
+
+  const target = questionId
+    ? Array.from(container.querySelectorAll("[data-source-question-id]")).find(
+        (element) => String(element.dataset.sourceQuestionId) === String(questionId),
+      )
+    : null;
+
+  if (!target) {
+    if (options.fallbackToTop) {
+      container.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    return;
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const stickyHeading = container.querySelector(".answer-column-heading");
+  const headingOffset = stickyHeading?.getBoundingClientRect().height ?? 0;
+  const top = container.scrollTop + targetRect.top - containerRect.top - headingOffset - 8;
+  container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+}
+
+function studentAnswerProgress(student) {
+  const total = Number(student.total_questions || taskQuestions.value.length || 0);
+  if (!total) return 0;
+  return Math.min(100, Math.round((Number(student.completed_questions || 0) / total) * 100));
+}
+
+function studentAnswerExtractionFinalized(student) {
+  const total = Number(student?.total_questions || taskQuestions.value.length || 0);
+  return Boolean(
+    total
+    && !student?.preview_only
+    && student?.status === "done"
+    && (student?.answers ?? []).length >= total,
+  );
+}
+
+function studentAnswerExtractionCompleted(student) {
+  const total = Number(student?.total_questions || taskQuestions.value.length || 0);
+  return Boolean(
+    total
+    && !student?.preview_only
+    && student?.status === "done"
+    && Number(student?.completed_questions || 0) >= total,
+  );
+}
+
+function studentAnswerCounts(student) {
+  const answers = student?.answers ?? [];
+  const total = Number(student?.total_questions || taskQuestions.value.length || 0);
+  const matched = answers.filter((answer) => answer.extraction_status === "matched").length;
+  return {
+    matched,
+    unmatched: Math.max(0, total - matched),
+  };
+}
+
+function answerForQuestion(questionId) {
+  return selectedAnswerStudentAnswers.value.find((answer) => answer.question_id === questionId);
+}
+
+function answerQuestionFinalized(questionId) {
+  return Boolean(studentAnswerExtractionFinalized(selectedAnswerStudent.value) && answerForQuestion(questionId));
+}
+
+function answerStudentKey(student) {
+  if (student?.source_file_id) return `file:${student.source_file_id}`;
+  if (student?.student_no) return `no:${student.student_no}`;
+  return `name:${student?.student_name ?? ""}`;
+}
+
+function buildPreviewAnswerExtractionStudents() {
+  const matchedItems = selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched");
+  return matchedItems
+    .map((item) => {
+      const sourceFile = selectedTaskFileGroup.value.student_submission?.find(
+        (file) => file.id === item.matched_file_id,
+      );
+      if (!sourceFile?.parsed_text) return null;
+      return {
+        submission_id: item.submission_id ?? `preview-${item.student_id}-${item.matched_file_id}`,
+        student_name: item.student_name,
+        student_no: item.student_no,
+        source_file_id: item.matched_file_id,
+        source_file_name: item.matched_file_name,
+        content: sourceFile.parsed_text,
+        total_questions: taskQuestions.value.length,
+        completed_questions: 0,
+        status: "pending",
+        error_message: "",
+        answers: [],
+        streaming_question_numbers: [],
+        preview_only: true,
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildInitialAnswerExtractionStudents(totalQuestions) {
+  const matchedItems = selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched");
+  return matchedItems
+    .filter((item) => item.submission_id)
+    .map((item) => {
+      const sourceFile = selectedTaskFileGroup.value.student_submission?.find(
+        (file) => file.id === item.matched_file_id,
+      );
+      return {
+        submission_id: item.submission_id,
+        student_name: item.student_name,
+        student_no: item.student_no,
+        source_file_id: item.matched_file_id,
+        source_file_name: item.matched_file_name,
+        content: sourceFile?.parsed_text ?? "",
+        total_questions: totalQuestions,
+        completed_questions: 0,
+        status: "pending",
+        error_message: "",
+        answers: [],
+        streaming_question_numbers: [],
+      };
+    });
+}
+
+function ensureAnswerExtractionSnapshot(totalQuestions) {
+  if (taskAnswerExtraction.value?.students?.length) return;
+  taskAnswerExtraction.value = {
+    task_id: selectedTaskId.value,
+    status: selectedTask.value?.status ?? "students_prepared",
+    stage: "extract_answers",
+    total_questions: totalQuestions,
+    total_students: studentParseMatchedCount.value,
+    completed_students: 0,
+    students: buildInitialAnswerExtractionStudents(totalQuestions),
+  };
+  selectedAnswerSubmissionId.value = taskAnswerExtraction.value.students[0]?.submission_id ?? null;
+}
+
+function updateAnswerStudentProgress(data, patch) {
+  ensureAnswerExtractionSnapshot(data.total_questions ?? taskQuestions.value.length);
+  taskAnswerExtraction.value = {
+    ...taskAnswerExtraction.value,
+    students: taskAnswerExtraction.value.students.map((student) =>
+      student.submission_id === data.submission_id
+        ? {
+            ...student,
+            status: patch.status ?? student.status,
+            completed_questions:
+              patch.completed_questions ?? data.completed_questions ?? student.completed_questions,
+            total_questions: data.total_questions ?? student.total_questions,
+            error_message: patch.error_message ?? student.error_message,
+            streaming_question_numbers: Array.isArray(data.question_numbers)
+              ? data.question_numbers
+              : student.streaming_question_numbers,
+          }
+        : student,
+    ),
+  };
+  taskAnswerExtraction.value.completed_students = taskAnswerExtraction.value.students.filter(
+    (student) => student.status === "done",
+  ).length;
+}
+
+function buildHighlightedSubmissionParts(student, answers) {
+  const content = student?.content ?? "";
+  if (!content) return [{ key: "empty", text: "暂无学生作业原文", questionId: null }];
+
+  const ranges = [];
+  answers.forEach((answer) => {
+    const answerText = String(answer.answer_text ?? "").trim();
+    if (!answerText) return;
+    const index = content.indexOf(answerText);
+    if (index < 0) return;
+    ranges.push({
+      start: index,
+      end: index + answerText.length,
+      questionId: answer.question_id,
+      streaming: false,
+    });
+  });
+  ranges.sort((left, right) => left.start - right.start);
+
+  const parts = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    if (range.start < cursor) return;
+    if (range.start > cursor) {
+      parts.push({ key: `text-${index}-${cursor}`, text: content.slice(cursor, range.start), questionId: null });
+    }
+    parts.push({
+      key: `answer-${range.questionId}-${range.start}`,
+      text: content.slice(range.start, range.end),
+      questionId: range.questionId,
+    });
+    cursor = range.end;
+  });
+  if (cursor < content.length) {
+    parts.push({ key: `text-tail-${cursor}`, text: content.slice(cursor), questionId: null });
+  }
+  return parts.length ? parts : [{ key: "all", text: content, questionId: null }];
 }
 
 async function handleTaskMaterialChange(material, uploadFile) {

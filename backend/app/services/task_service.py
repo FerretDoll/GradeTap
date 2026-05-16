@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, inspect, or_, select, text
 
 from app.core.config import settings
 from app.db.models import (
@@ -33,10 +33,12 @@ from app.schemas.task import GradingTaskCreate, GradingTaskRead
 
 class TaskService:
     def create_task(self, payload: GradingTaskCreate) -> GradingTaskRead:
+        self._ensure_task_schema()
         with SessionLocal() as db:
             task = GradingTask(
                 task_name=payload.task_name,
                 course_name=payload.course_name,
+                assignment_name=payload.assignment_name,
                 class_name=payload.class_name,
                 status=GradingTaskStatus.CREATED,
                 grading_instruction=payload.grading_instruction,
@@ -47,11 +49,13 @@ class TaskService:
             return self._to_read_schema(task)
 
     def list_tasks(self) -> list[GradingTaskRead]:
+        self._ensure_task_schema()
         with SessionLocal() as db:
             tasks = db.scalars(select(GradingTask).order_by(GradingTask.id.desc())).all()
             return [self._to_read_schema(task) for task in tasks]
 
     def get_task(self, task_id: int) -> Optional[GradingTaskRead]:
+        self._ensure_task_schema()
         with SessionLocal() as db:
             task = db.get(GradingTask, task_id)
             if task is None:
@@ -131,6 +135,7 @@ class TaskService:
             id=task.id,
             task_name=task.task_name,
             course_name=task.course_name,
+            assignment_name=task.assignment_name or "",
             class_name=task.class_name,
             status=task.status,
             grading_instruction=task.grading_instruction,
@@ -142,6 +147,14 @@ class TaskService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value
+
+    def _ensure_task_schema(self) -> None:
+        table_name = GradingTask.__tablename__
+        with SessionLocal() as db:
+            existing_columns = {column["name"] for column in inspect(db.bind).get_columns(table_name)}
+            if "assignment_name" not in existing_columns:
+                db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN assignment_name VARCHAR(255) NOT NULL DEFAULT ''"))
+                db.commit()
 
 
 task_service = TaskService()
