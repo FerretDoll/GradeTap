@@ -97,7 +97,7 @@ class GradeByQuestionRequest(BaseModel):
 class GradeByQuestionResponse(BaseModel):
     task_id: int
     question_id: int
-    grading_results: list[GradingResultCreate] = Field(default_factory=list)
+    grading_results: list[GradingResultRead] = Field(default_factory=list)
 
 
 class GradingReflectionBase(BaseModel):

@@ -3,6 +3,34 @@ import { defineStore } from "pinia";
 import { analyzeTaskQuestions, createTask, listTasks, parseTaskFiles } from "../api/tasks";
 
 const LOCAL_TASKS_KEY = "gradetap.tasks";
+const TASK_PROGRESS_STAGES = [
+  "prepare_students",
+  "extract_answers",
+  "extract_evidence",
+  "grade_by_question",
+  "reflect_grading",
+  "teacher_review",
+  "export_results",
+];
+
+function normalizeProgressStageKey(stageKey) {
+  if (
+    stageKey === "parse_files"
+    || stageKey === "analyze_questions"
+    || stageKey === "build_rubrics"
+    || stageKey === "teacher_confirm_rubrics"
+  ) {
+    return "prepare_students";
+  }
+  return stageKey;
+}
+
+function taskProgressForStage(stageKey) {
+  const normalized = normalizeProgressStageKey(stageKey);
+  const index = TASK_PROGRESS_STAGES.indexOf(normalized);
+  if (index < 0) return 0;
+  return Math.round((index / (TASK_PROGRESS_STAGES.length - 1)) * 100);
+}
 
 function readLocalTasks() {
   try {
@@ -85,7 +113,7 @@ export const useTaskStore = defineStore("tasks", {
           ? {
               ...task,
               status: "grading",
-              progress: 35,
+              progress: taskProgressForStage("extract_answers"),
               current_stage: "extract_answers",
               updated_at: new Date().toISOString(),
             }
@@ -116,7 +144,7 @@ export const useTaskStore = defineStore("tasks", {
           ? {
               ...task,
               status: result.status ?? "parsed",
-              progress: Math.max(task.progress ?? 0, 18),
+              progress: taskProgressForStage("analyze_questions"),
               current_stage: "analyze_questions",
               updated_at: new Date().toISOString(),
             }
@@ -132,7 +160,7 @@ export const useTaskStore = defineStore("tasks", {
           ? {
               ...task,
               status: result.status ?? "questions_analyzed",
-              progress: Math.max(task.progress ?? 0, 28),
+              progress: taskProgressForStage("build_rubrics"),
               current_stage: "build_rubrics",
               updated_at: new Date().toISOString(),
             }

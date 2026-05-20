@@ -81,3 +81,15 @@ export async function startTaskEvidenceExtraction(taskId, maxWorkers = 3, force 
   });
   return response.data;
 }
+
+export async function gradeTaskQuestion(taskId, payload) {
+  const response = await apiClient.post(`/tasks/${taskId}/grade-by-question`, payload, {
+    timeout: LONG_RUNNING_TASK_TIMEOUT,
+  });
+  return response.data;
+}
+
+export async function getTaskGradingResults(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/grading-results`);
+  return response.data;
+}

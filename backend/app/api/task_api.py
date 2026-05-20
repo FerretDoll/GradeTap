@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
 from app.schemas.file import UploadedFileRead
-from app.schemas.grading import GradeByQuestionRequest, GradeByQuestionResponse
+from app.schemas.grading import GradeByQuestionRequest, GradeByQuestionResponse, GradingResultRead
 from app.schemas.question import QuestionRead
 from app.schemas.answer import (
     AnswerExtractionSnapshot,
@@ -155,11 +155,18 @@ def grade_by_question(task_id: int, payload: GradeByQuestionRequest) -> GradeByQ
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    saved_results = grading_service.save_grading_results(task_id, grading_results)
     return GradeByQuestionResponse(
         task_id=task_id,
         question_id=payload.question.id,
-        grading_results=grading_results,
+        grading_results=saved_results,
     )
+
+
+@router.get("/{task_id}/grading-results", response_model=list[GradingResultRead])
+def list_grading_results(task_id: int) -> list[GradingResultRead]:
+    task_service.ensure_task_exists(task_id)
+    return grading_service.list_grading_results(task_id)
 
 
 @router.post("/{task_id}/reflect-grading")
