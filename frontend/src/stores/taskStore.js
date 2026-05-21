@@ -8,7 +8,6 @@ const TASK_PROGRESS_STAGES = [
   "extract_answers",
   "extract_evidence",
   "grade_by_question",
-  "reflect_grading",
   "teacher_review",
   "export_results",
 ];
@@ -21,6 +20,9 @@ function normalizeProgressStageKey(stageKey) {
     || stageKey === "teacher_confirm_rubrics"
   ) {
     return "prepare_students";
+  }
+  if (stageKey === "reflect_grading" || stageKey === "route_review") {
+    return "teacher_review";
   }
   return stageKey;
 }

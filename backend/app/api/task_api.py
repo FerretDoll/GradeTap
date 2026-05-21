@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from typing import Union
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
 from app.schemas.file import UploadedFileRead
-from app.schemas.grading import GradeByQuestionRequest, GradeByQuestionResponse, GradingResultRead
+from app.schemas.grading import (
+    GradeByQuestionRequest,
+    GradeByQuestionResponse,
+    GradingResultRead,
+    TeacherReviewUpdate,
+    TeacherRevisionRead,
+)
 from app.schemas.question import QuestionRead
 from app.schemas.answer import (
     AnswerExtractionSnapshot,
@@ -15,6 +23,7 @@ from app.schemas.answer import (
     StudentPrepareResponse,
 )
 from app.schemas.evidence import EvidenceExtractionSnapshot
+from app.schemas.export import ExportResultsRequest
 from app.schemas.task import GradingTaskCreate, GradingTaskRead
 from app.services.file_parse_service import file_parse_service
 from app.services.file_service import file_service
@@ -25,6 +34,8 @@ from app.services.progress_event_service import progress_event_service
 from app.services.question_analyzer_service import question_analyzer_service
 from app.services.student_prepare_service import student_prepare_service
 from app.services.task_service import task_service
+from app.services.teacher_review_service import teacher_review_service
+from app.utils.excel_export import export_grades_to_excel
 
 router = APIRouter()
 
@@ -169,6 +180,33 @@ def list_grading_results(task_id: int) -> list[GradingResultRead]:
     return grading_service.list_grading_results(task_id)
 
 
+@router.get("/{task_id}/teacher-revisions", response_model=list[TeacherRevisionRead])
+def list_teacher_revisions(task_id: int) -> list[TeacherRevisionRead]:
+    task_service.ensure_task_exists(task_id)
+    return teacher_review_service.list_revisions(task_id)
+
+
+@router.put("/{task_id}/grading-results/{result_id}/review", response_model=TeacherRevisionRead)
+def review_grading_result(
+    task_id: int,
+    result_id: int,
+    payload: TeacherReviewUpdate,
+) -> TeacherRevisionRead:
+    task_service.ensure_task_exists(task_id)
+    try:
+        return teacher_review_service.save_review(
+            task_id=task_id,
+            grading_result_id=result_id,
+            final_score=payload.final_score,
+            final_comment=payload.final_comment,
+            revision_reason=payload.revision_reason,
+            review_status=payload.review_status,
+            teacher_id=payload.teacher_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/{task_id}/reflect-grading")
 def reflect_grading(task_id: int) -> dict[str, Union[str, int]]:
     task_service.ensure_task_exists(task_id)
@@ -182,6 +220,18 @@ def route_review(task_id: int) -> dict[str, Union[str, int]]:
 
 
 @router.post("/{task_id}/export-results")
-def export_results(task_id: int) -> dict[str, Union[str, int]]:
+def export_results(task_id: int, payload: ExportResultsRequest | None = None) -> Response:
     task_service.ensure_task_exists(task_id)
-    return {"task_id": task_id, "status": "queued", "stage": "export_results"}
+    try:
+        content = export_grades_to_excel(task_id, payload.teacher_revisions if payload else [])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filename = f"gradetap-task-{task_id}-results.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )

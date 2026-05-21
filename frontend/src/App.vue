@@ -259,7 +259,6 @@
                       'progress-stage-detail--answer-extract': activeProgressStage.key === 'extract_answers',
                       'progress-stage-detail--evidence-extract': activeProgressStage.key === 'extract_evidence',
                       'progress-stage-detail--ai-grading': activeProgressStage.key === 'grade_by_question',
-                      'progress-stage-detail--reflection': activeProgressStage.key === 'reflect_grading',
                     }"
                   >
                     <div class="stage-detail-title">
@@ -279,13 +278,13 @@
                         <span class="section-kicker">AI Grading</span>
                         <h3>{{ aiGradingCompletedAnswerCount }}/{{ aiGradingTotalAnswerCount }} 份答案已评分</h3>
                       </div>
-                      <div v-else-if="activeProgressStage.key === 'reflect_grading'">
-                        <span class="section-kicker">Reflection</span>
-                        <h3>{{ reflectionFlaggedCount }}/{{ reflectionItems.length }} 条评分需关注</h3>
-                      </div>
                       <div v-else-if="activeProgressStage.key === 'teacher_review'">
                         <span class="section-kicker">Teacher Review</span>
                         <h3>{{ teacherReviewCompletedCount }}/{{ teacherReviewTotalCount }} 条复核已确认</h3>
+                      </div>
+                      <div v-else-if="activeProgressStage.key === 'export_results'">
+                        <span class="section-kicker">Export</span>
+                        <h3>{{ exportPreviewRows.length }} 名学生可导出</h3>
                       </div>
                       <div v-else-if="activeProgressStage.key === 'analyze_questions'">
                         <span class="section-kicker">{{ activeProgressStage.eyebrow }}</span>
@@ -307,9 +306,6 @@
                         </el-tag>
                         <el-tag v-if="activeProgressStage.key === 'grade_by_question'" effect="plain">
                           每批 {{ AI_GRADING_BATCH_SIZE }} 人
-                        </el-tag>
-                        <el-tag v-if="activeProgressStage.key === 'reflect_grading'" effect="plain">
-                          {{ reflectionUrgentCount }} 个高优先级
                         </el-tag>
                         <el-tag v-if="activeProgressStage.key === 'teacher_review'" effect="plain">
                           {{ teacherReviewRequiredCount }} 条待复核
@@ -405,35 +401,6 @@
                             重新AI评分
                           </el-button>
                         </template>
-                        <template v-else-if="activeProgressStage.key === 'reflect_grading'">
-                          <el-button
-                            size="small"
-                            type="primary"
-                            :disabled="!aiGradingResults.length"
-                            :loading="reflectionLoading"
-                            @click="runReflectGrading(false)"
-                          >
-                            {{ reflectionItems.length ? "继续校准评分" : "开始反思校准" }}
-                          </el-button>
-                          <el-button
-                            v-if="reflectionItems.length"
-                            size="small"
-                            type="warning"
-                            :disabled="!aiGradingResults.length"
-                            :loading="reflectionLoading"
-                            @click="runReflectGrading(true)"
-                          >
-                            重新校准评分
-                          </el-button>
-                          <el-select v-model="reflectionFilter" size="small" class="reflection-filter-select">
-                            <el-option label="全部结果" value="all" />
-                            <el-option label="只看需复核" value="review" />
-                            <el-option label="高优先级" value="urgent" />
-                            <el-option label="低置信度" value="low_confidence" />
-                            <el-option label="证据与得分不一致" value="evidence_conflict" />
-                            <el-option label="已通过" value="passed" />
-                          </el-select>
-                        </template>
                         <template v-else-if="activeProgressStage.key === 'teacher_review'">
                           <el-select v-model="teacherReviewFilter" size="small" class="teacher-review-filter-select">
                             <el-option label="全部题目" value="all" />
@@ -445,10 +412,21 @@
                           <el-button
                             size="small"
                             type="success"
-                            :disabled="!teacherReviewPendingStableItems.length"
                             @click="confirmStableTeacherReviewItems"
                           >
                             批量确认稳定项
+                          </el-button>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'export_results'">
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :icon="Download"
+                            :disabled="!aiGradingResults.length"
+                            :loading="exportResultsLoading"
+                            @click="runResultExport"
+                          >
+                            导出 Excel
                           </el-button>
                         </template>
                       </div>
@@ -579,7 +557,10 @@
                           @mouseleave="clearAnswerInteractionArea('question-list')"
                         >
                           <div class="answer-column-heading">
-                            <strong>题目</strong>
+                            <strong>
+                              题目
+                              <span v-if="selectedAnswerStudent?.student_name" class="heading-student-name">{{ selectedAnswerStudent.student_name }}</span>
+                            </strong>
                             <el-tag effect="plain">{{ selectedAnswerStudentAnswers.length }} 题</el-tag>
                           </div>
                           <div ref="answerQuestionListRef" class="answer-card-list">
@@ -668,7 +649,7 @@
                                 :type="studentEvidenceLowConfidenceCount(student) ? 'warning' : 'success'"
                                 effect="light"
                               >
-                                {{ studentEvidenceLowConfidenceCount(student) ? "需关注" : "稳定" }}
+                                {{ studentEvidenceLowConfidenceCount(student) ? "需复核" : "稳定" }}
                               </el-tag>
                             </div>
                             <div class="evidence-student-counts">
@@ -687,7 +668,10 @@
 
                         <div class="evidence-question-view">
                           <div class="answer-column-heading">
-                            <strong>题目</strong>
+                            <strong>
+                              题目
+                              <span v-if="selectedEvidenceStudent?.student_name" class="heading-student-name">{{ selectedEvidenceStudent.student_name }}</span>
+                            </strong>
                             <el-tag effect="plain">{{ filteredEvidenceQuestions.length }} 题</el-tag>
                           </div>
                           <div class="evidence-question-list">
@@ -704,11 +688,12 @@
                               <div class="evidence-question-card-head">
                                 <strong>{{ questionLabel(questionItem.question_id) }}</strong>
                                 <el-tag
+                                  v-if="!evidenceQuestionComplete(questionItem) || questionEvidenceLowConfidenceCount(questionItem)"
                                   class="status-tag--compact"
-                                  :type="answerStatusMeta(questionItem.extraction_status).type"
+                                  :type="!evidenceQuestionComplete(questionItem) ? 'info' : 'warning'"
                                   effect="light"
                                 >
-                                  {{ answerStatusMeta(questionItem.extraction_status).label }}
+                                  {{ !evidenceQuestionComplete(questionItem) ? "待提取" : "需复核" }}
                                 </el-tag>
                               </div>
                               <section class="question-answer-snippet">
@@ -827,7 +812,10 @@
 
                         <div class="ai-grading-result-view">
                           <div class="answer-column-heading">
-                            <strong>题目评分结果</strong>
+                            <strong>
+                              题目
+                              <span v-if="selectedAiGradingStudent?.student_name" class="heading-student-name">{{ selectedAiGradingStudent.student_name }}</span>
+                            </strong>
                             <el-tag effect="plain">{{ selectedAiGradingQuestions.length }} 题</el-tag>
                           </div>
                           <div class="ai-grading-question-list">
@@ -844,10 +832,11 @@
                               <div class="evidence-question-card-head">
                                 <strong>{{ questionLabel(questionItem.question_id) }}</strong>
                                 <el-tag
-                                  :type="questionItem.grading_result ? gradingStatusMeta(questionItem.grading_result.grading_status).type : 'info'"
+                                  v-if="!questionItem.grading_result || questionHasReviewReasons(questionItem)"
+                                  :type="!questionItem.grading_result ? 'info' : 'warning'"
                                   effect="light"
                                 >
-                                  {{ questionItem.grading_result ? gradingStatusMeta(questionItem.grading_result.grading_status).label : "待评分" }}
+                                  {{ !questionItem.grading_result ? "待评分" : "需复核" }}
                                 </el-tag>
                               </div>
                               <section class="question-answer-snippet">
@@ -858,8 +847,13 @@
                                 <strong>{{ formatScore(questionItem.grading_result?.score) }}</strong>
                                 <span>/ {{ questionMaxScore(questionItem.question_id) }} 分</span>
                                 <small>置信度 {{ formatPercent(questionItem.grading_result?.confidence ?? 0) }}</small>
+                                <el-tag
+                                  :type="questionItem.grading_result ? gradingStatusMeta(questionItem.grading_result.grading_status).type : 'info'"
+                                  effect="light"
+                                >
+                                  {{ questionItem.grading_result ? gradingStatusMeta(questionItem.grading_result.grading_status).label : "待评分" }}
+                                </el-tag>
                               </div>
-                              <p>{{ questionItem.grading_result?.ai_comment || "等待 AI 基于证据和量规生成评分理由。" }}</p>
                             </article>
                           </div>
                         </div>
@@ -890,6 +884,18 @@
                                   {{ reason.label }}
                                 </el-tag>
                               </div>
+                            </section>
+                            <section class="reflection-detail-section">
+                              <div class="reflection-detail-title">
+                                <strong>AI 评分理由</strong>
+                                <el-tag
+                                  :type="gradingStatusMeta(selectedAiGradingQuestion.grading_result?.grading_status).type"
+                                  effect="light"
+                                >
+                                  {{ gradingStatusMeta(selectedAiGradingQuestion.grading_result?.grading_status).label }}
+                                </el-tag>
+                              </div>
+                              <p>{{ selectedAiGradingQuestion.grading_result?.ai_comment || "等待 AI 基于证据和量规生成评分理由。" }}</p>
                             </section>
                             <article
                               v-for="row in selectedAiGradingDimensionRows"
@@ -943,7 +949,7 @@
                         :image-size="72"
                       />
                     </div>
-                    <div v-else-if="activeProgressStage.key === 'reflect_grading'" class="reflection-panel">
+                    <div v-if="false" class="reflection-panel">
                       <div v-if="aiGradingResults.length" class="reflection-grid">
                         <aside class="reflection-side-list">
                           <el-radio-group v-model="reflectionGroupMode" size="small" class="reflection-mode-switch">
@@ -1082,7 +1088,7 @@
                       />
                     </div>
                     <div v-else-if="activeProgressStage.key === 'teacher_review'" class="teacher-review-panel">
-                      <div v-if="aiGradingResults.length" class="teacher-review-grid">
+                      <div v-if="teacherReviewStudents.length" class="teacher-review-grid">
                         <aside class="teacher-review-student-list">
                           <button
                             v-for="student in teacherReviewStudents"
@@ -1118,7 +1124,10 @@
 
                         <section class="teacher-review-question-list">
                           <div class="answer-column-heading">
-                            <strong>复核题目</strong>
+                            <strong>
+                              题目
+                              <span v-if="selectedTeacherReviewStudent?.student_name" class="heading-student-name">{{ selectedTeacherReviewStudent.student_name }}</span>
+                            </strong>
                             <el-tag effect="plain">{{ filteredTeacherReviewQuestions.length }}/{{ selectedTeacherReviewQuestions.length }} 题</el-tag>
                           </div>
                           <div class="teacher-review-question-card-list">
@@ -1140,22 +1149,19 @@
                                   {{ teacherReviewStatusMeta(questionItem).label }}
                                 </el-tag>
                               </div>
+                              <section class="question-answer-snippet">
+                                <span>学生答案</span>
+                                <p>{{ questionItem.answer_text || "未抽取到学生答案。" }}</p>
+                              </section>
                               <div class="teacher-review-question-score">
                                 <span>AI {{ formatScore(questionItem.grading_result?.score) }}</span>
                                 <strong>最终 {{ formatScore(teacherReviewFinalScore(questionItem)) }}</strong>
                                 <small>/ {{ questionMaxScore(questionItem.question_id) }} 分</small>
-                              </div>
-                              <div class="reflection-issue-tags">
                                 <el-tag
-                                  v-for="reason in teacherReviewReasons(questionItem).slice(0, 3)"
-                                  :key="reason.key"
-                                  :type="reason.type"
+                                  :type="gradingStatusMeta(questionItem.grading_result?.grading_status).type"
                                   effect="light"
                                 >
-                                  {{ reason.label }}
-                                </el-tag>
-                                <el-tag v-if="!teacherReviewReasons(questionItem).length" type="success" effect="light">
-                                  无异常
+                                  {{ gradingStatusMeta(questionItem.grading_result?.grading_status).label }}
                                 </el-tag>
                               </div>
                             </article>
@@ -1173,6 +1179,27 @@
                             <el-tag effect="plain">复核详情</el-tag>
                           </div>
                           <div v-if="selectedTeacherReviewQuestion" class="teacher-review-detail-body">
+                            <section
+                              v-if="selectedTeacherReviewReasons.length"
+                              class="ai-review-reason-box"
+                            >
+                              <div class="reflection-detail-title">
+                                <strong>需复核原因</strong>
+                                <el-tag :type="reviewPriorityMeta(selectedTeacherReviewQuestion.grading_result?.review_priority).type" effect="light">
+                                  {{ reviewPriorityMeta(selectedTeacherReviewQuestion.grading_result?.review_priority).label }}
+                                </el-tag>
+                              </div>
+                              <div class="reflection-issue-tags">
+                                <el-tag
+                                  v-for="reason in selectedTeacherReviewReasons"
+                                  :key="reason.key"
+                                  :type="reason.type"
+                                  effect="light"
+                                >
+                                  {{ reason.label }}
+                                </el-tag>
+                              </div>
+                            </section>
                             <div class="teacher-review-score-editor">
                               <div class="teacher-review-score-metrics">
                                 <div>
@@ -1227,16 +1254,6 @@
 
                             <section class="reflection-detail-section">
                               <div class="reflection-detail-title">
-                                <strong>学生答案</strong>
-                                <el-tag effect="plain">
-                                  {{ answerStatusMeta(selectedTeacherReviewQuestion.extraction_status).label }}
-                                </el-tag>
-                              </div>
-                              <p>{{ selectedTeacherReviewQuestion.answer_text || "未抽取到学生答案。" }}</p>
-                            </section>
-
-                            <section class="reflection-detail-section">
-                              <div class="reflection-detail-title">
                                 <strong>AI 评分理由</strong>
                                 <el-tag
                                   :type="gradingStatusMeta(selectedTeacherReviewQuestion.grading_result?.grading_status).type"
@@ -1252,14 +1269,14 @@
                               v-for="row in selectedTeacherReviewDimensionRows"
                               :key="row.rubric.id"
                               class="reflection-dimension-card"
-                              :class="{ warning: row.issues.length }"
+                              :class="{ warning: row.issues.length || row.confidence < 0.8 || !row.score }"
                             >
                               <div class="evidence-dimension-head">
                                 <div>
                                   <strong>{{ row.rubric.dimension_name }}</strong>
                                   <span>{{ row.rubric.max_score }} 分 · {{ row.rubric.evidence_requirement }}</span>
                                 </div>
-                                <el-tag :type="row.issues.length ? 'warning' : 'success'" effect="light">
+                                <el-tag :type="row.issues.length || row.confidence < 0.8 || !row.score ? 'warning' : 'success'" effect="light">
                                   {{ formatScore(row.score?.score) }} / {{ formatScore(row.rubric.max_score) }}
                                 </el-tag>
                               </div>
@@ -1296,7 +1313,44 @@
                       <el-empty
                         v-else
                         class="student-parse-empty"
-                        description="请先完成 AI 评分和复核分流，再进入教师复核"
+                        :description="aiGradingResults.length ? '暂无可复核的 AI 评分结果' : '请先完成 AI 评分，再进入教师复核'"
+                        :image-size="72"
+                      />
+                    </div>
+                    <div v-else-if="activeProgressStage.key === 'export_results'" class="export-results-panel">
+                      <div v-if="teacherReviewStudents.length" class="export-results-grid">
+                        <section class="export-summary-box">
+                          <div>
+                            <span class="section-kicker">Excel Export</span>
+                            <h3>成绩总表与按题明细</h3>
+                            <p>总分优先使用教师最终分；教师评语会按题整合为学生总评语。</p>
+                          </div>
+                          <el-button
+                            type="primary"
+                            :icon="Download"
+                            :loading="exportResultsLoading"
+                            @click="runResultExport"
+                          >
+                            导出 Excel
+                          </el-button>
+                        </section>
+                        <el-table
+                          :data="exportPreviewRows"
+                          size="small"
+                          height="100%"
+                          class="task-table"
+                          empty-text="暂无可导出的成绩"
+                        >
+                          <el-table-column prop="student_no" label="学号" width="120" align="center" />
+                          <el-table-column prop="student_name" label="姓名" width="120" align="center" />
+                          <el-table-column prop="total_score" label="总分" width="100" align="center" />
+                          <el-table-column prop="teacher_comment" label="教师评语" min-width="260" show-overflow-tooltip />
+                        </el-table>
+                      </div>
+                      <el-empty
+                        v-else
+                        class="student-parse-empty"
+                        description="请先完成 AI 评分和教师复核，再导出结果"
                         :image-size="72"
                       />
                     </div>
@@ -2352,6 +2406,7 @@ import {
   Collection,
   Delete,
   DocumentChecked,
+  Download,
   Edit,
   Expand,
   Fold,
@@ -2396,13 +2451,16 @@ import {
 import {
   deleteTask as deleteTaskApi,
   deleteTaskFile,
+  exportTaskResults,
   getTaskGradingResults,
+  getTaskTeacherRevisions,
   gradeTaskQuestion,
   getTaskAnswerExtraction,
   getTaskEvidenceExtraction,
   listTaskQuestions,
   listTaskFiles,
   prepareTaskStudents,
+  reviewTaskGradingResult,
   startTaskAnswerExtraction,
   startTaskEvidenceExtraction,
   uploadTaskFile,
@@ -2552,6 +2610,7 @@ const reflectionDetailVisible = ref(false);
 const selectedTeacherReviewSubmissionId = ref(null);
 const selectedTeacherReviewQuestionId = ref(null);
 const teacherReviewFilter = ref("all");
+const exportResultsLoading = ref(false);
 const teacherReviewDraft = reactive({
   final_score: 0,
   review_status: "teacher_confirmed",
@@ -2921,6 +2980,7 @@ const selectedReflectionDimensionRows = computed(() => {
       rubric,
       evidence,
       score,
+      confidence: Number(evidence?.confidence ?? 0),
       issues,
       positive_evidence: evidence?.positive_evidence ?? [],
       negative_evidence: evidence?.negative_evidence ?? [],
@@ -2930,11 +2990,12 @@ const selectedReflectionDimensionRows = computed(() => {
 const teacherReviewStudents = computed(() =>
   aiGradingStudents.value.map((student) => {
     const questions = student.questions ?? [];
-    const reviewRequiredCount = questions.filter((question) => questionNeedsTeacherReview(question)).length;
-    const reviewCompletedCount = questions.filter((question) =>
+    const reviewQuestions = questions.filter((question) => question.grading_result);
+    const reviewRequiredCount = reviewQuestions.filter((question) => questionNeedsTeacherReview(question, student)).length;
+    const reviewCompletedCount = reviewQuestions.filter((question) =>
       Boolean(teacherReviewRevisionForResult(question.grading_result)),
     ).length;
-    const reviewModifiedCount = questions.filter(
+    const reviewModifiedCount = reviewQuestions.filter(
       (question) => teacherReviewRevisionForResult(question.grading_result)?.review_status === "teacher_modified",
     ).length;
     return {
@@ -2942,9 +3003,9 @@ const teacherReviewStudents = computed(() =>
       review_required_count: reviewRequiredCount,
       review_completed_count: reviewCompletedCount,
       review_modified_count: reviewModifiedCount,
-      review_total_count: questions.length,
+      review_total_count: reviewQuestions.length,
     };
-  }),
+  }).filter((student) => student.review_total_count > 0),
 );
 const selectedTeacherReviewStudent = computed(() => {
   if (!teacherReviewStudents.value.length) return null;
@@ -2953,10 +3014,14 @@ const selectedTeacherReviewStudent = computed(() => {
     ?? teacherReviewStudents.value[0]
   );
 });
-const selectedTeacherReviewQuestions = computed(() => selectedTeacherReviewStudent.value?.questions ?? []);
+const selectedTeacherReviewQuestions = computed(() => {
+  const student = selectedTeacherReviewStudent.value;
+  if (!student) return [];
+  return (student.questions ?? []).filter((question) => question.grading_result);
+});
 const filteredTeacherReviewQuestions = computed(() => selectedTeacherReviewQuestions.value.filter((question) => {
   const revision = teacherReviewRevisionForResult(question.grading_result);
-  if (teacherReviewFilter.value === "required") return questionNeedsTeacherReview(question);
+  if (teacherReviewFilter.value === "required") return questionNeedsTeacherReview(question, selectedTeacherReviewStudent.value);
   if (teacherReviewFilter.value === "confirmed") return revision?.review_status === "teacher_confirmed";
   if (teacherReviewFilter.value === "modified") return revision?.review_status === "teacher_modified";
   if (teacherReviewFilter.value === "urgent") {
@@ -2977,6 +3042,9 @@ const selectedTeacherReviewQuestion = computed(() => {
 const selectedTeacherReviewQuestionTitle = computed(() =>
   selectedTeacherReviewQuestion.value ? questionLabel(selectedTeacherReviewQuestion.value.question_id) : "教师复核",
 );
+const selectedTeacherReviewReasons = computed(() =>
+  teacherReviewReasons(selectedTeacherReviewQuestion.value),
+);
 const selectedTeacherReviewDimensionRows = computed(() => {
   const questionItem = selectedTeacherReviewQuestion.value;
   if (!questionItem) return [];
@@ -2995,6 +3063,7 @@ const selectedTeacherReviewDimensionRows = computed(() => {
       rubric,
       evidence,
       score,
+      confidence: Number(evidence?.confidence ?? 0),
       issues,
       positive_evidence: evidence?.positive_evidence ?? [],
       negative_evidence: evidence?.negative_evidence ?? [],
@@ -3021,6 +3090,30 @@ const teacherReviewPendingStableItems = computed(() =>
       && !teacherReviewRevisionForResult(question.grading_result),
     ),
   ),
+);
+const exportPreviewRows = computed(() =>
+  teacherReviewStudents.value.map((student) => {
+    const reviewStatuses = new Set();
+    const comments = [];
+    (student.questions ?? []).forEach((questionItem) => {
+      if (!questionItem.grading_result) return;
+      const revision = teacherReviewRevisionForResult(questionItem.grading_result);
+      reviewStatuses.add(revision?.review_status ?? questionItem.grading_result.review_status ?? "ai_generated");
+      const finalScore = Number(teacherReviewFinalScore(questionItem) ?? 0);
+      const maxScore = Number(questionMaxScore(questionItem.question_id) ?? 0);
+      const teacherComment = questionTeacherFinalComment(questionItem);
+      if (finalScore < maxScore && teacherComment) {
+        comments.push(`${questionNumberLabel(questionItem.question_id)}：${teacherComment}`);
+      }
+    });
+    return {
+      student_no: student.student_no || "未填写",
+      student_name: student.student_name,
+      total_score: studentTeacherFinalScore(student),
+      teacher_comment: comments.join("；"),
+      review_status: Array.from(reviewStatuses).join("、"),
+    };
+  }),
 );
 const llmProviders = [
   {
@@ -3156,13 +3249,6 @@ const taskStages = [
     detail: "同一道题批量批改所有学生答案，主要依据结构化证据和已确认量规评分。",
   },
   {
-    key: "reflect_grading",
-    eyebrow: "Reflection",
-    title: "反思校准",
-    caption: "检查评分一致性",
-    detail: "检查总分求和、证据与得分不一致、空答案给分、超分和理由不匹配等异常情况。",
-  },
-  {
     key: "teacher_review",
     eyebrow: "Teacher Review",
     title: "教师复核",
@@ -3186,6 +3272,9 @@ function normalizeProgressStageKey(backendKey) {
     || backendKey === "teacher_confirm_rubrics"
   ) {
     return "prepare_students";
+  }
+  if (backendKey === "reflect_grading" || backendKey === "route_review") {
+    return "teacher_review";
   }
   return backendKey;
 }
@@ -3318,12 +3407,14 @@ const LOCAL_LLM_SETTINGS_KEY = "gradetap.llmSettings";
 const LOCAL_TASK_FILES_KEY = "gradetap.taskFiles";
 const LOCAL_TASK_STUDENT_MATCHES_KEY = "gradetap.taskStudentMatches";
 const LOCAL_TEACHER_REVISIONS_KEY = "gradetap.teacherRevisions";
+const LOCAL_MANUAL_REVIEW_ROUTES_KEY = "gradetap.manualReviewRoutes";
 
 const assignmentFileMap = ref(readLocalAssignmentFileMap());
 const taskFileMap = ref(readLocalTaskFileMap());
 const taskStudentMatchMap = ref(readLocalTaskStudentMatchMap());
 const assignmentRubricMap = ref(readLocalAssignmentRubricMap());
 const teacherRevisionMap = ref(readLocalTeacherRevisionMap());
+const manualReviewRouteMap = ref(readLocalManualReviewRouteMap());
 
 function readLocalList(key) {
   try {
@@ -3364,6 +3455,14 @@ function readLocalTaskStudentMatchMap() {
 function readLocalTeacherRevisionMap() {
   try {
     return JSON.parse(window.localStorage.getItem(LOCAL_TEACHER_REVISIONS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function readLocalManualReviewRouteMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_MANUAL_REVIEW_ROUTES_KEY) ?? "{}");
   } catch {
     return {};
   }
@@ -3421,6 +3520,54 @@ function writeLocalTaskStudentMatchMap(map) {
 
 function writeLocalTeacherRevisionMap(map) {
   window.localStorage.setItem(LOCAL_TEACHER_REVISIONS_KEY, JSON.stringify(map));
+}
+
+function mergeBackendTeacherRevisions(taskId, revisions = []) {
+  const taskKey = String(taskId);
+  const current = teacherRevisionMap.value[taskKey] ?? {};
+  const incoming = Object.fromEntries(
+    revisions.map((revision) => [
+      String(revision.grading_result_id),
+      normalizeTeacherRevision(revision),
+    ]),
+  );
+  teacherRevisionMap.value = {
+    ...teacherRevisionMap.value,
+    [taskKey]: {
+      ...current,
+      ...incoming,
+    },
+  };
+  writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+}
+
+function normalizeTeacherRevision(revision) {
+  return {
+    id: revision.id ?? null,
+    grading_result_id: revision.grading_result_id,
+    student_answer_id: revision.student_answer_id ?? null,
+    student_submission_id: revision.student_submission_id ?? null,
+    question_id: revision.question_id ?? null,
+    final_score: Number(revision.final_score ?? 0),
+    review_status: revision.review_status ?? "teacher_modified",
+    final_comment: revision.final_comment ?? revision.teacher_comment ?? "",
+    teacher_comment: revision.teacher_comment ?? revision.final_comment ?? "",
+    revision_reason: revision.revision_reason ?? "",
+    updated_at: revision.updated_at ?? revision.created_at ?? new Date().toISOString(),
+  };
+}
+
+function writeLocalManualReviewRouteMap(map) {
+  window.localStorage.setItem(LOCAL_MANUAL_REVIEW_ROUTES_KEY, JSON.stringify(map));
+}
+
+function clearManualReviewRoutesForTask(taskId) {
+  if (!taskId) return;
+  const nextMap = { ...manualReviewRouteMap.value };
+  delete nextMap[String(taskId)];
+  manualReviewRouteMap.value = nextMap;
+  manuallyRoutedReflectionKeys.value = new Set();
+  writeLocalManualReviewRouteMap(nextMap);
 }
 
 function clearTeacherRevisionsForTask(taskId) {
@@ -3706,7 +3853,7 @@ function resetTaskDetailState() {
   evidenceLowConfidenceOnly.value = false;
   selectedReflectionGroupId.value = null;
   selectedReflectionItemKey.value = null;
-  manuallyRoutedReflectionKeys.value = new Set();
+  manuallyRoutedReflectionKeys.value = new Set(manualReviewRouteMap.value[String(selectedTaskId.value)] ?? []);
   reflectionDetailVisible.value = false;
   selectedTeacherReviewSubmissionId.value = null;
   selectedTeacherReviewQuestionId.value = null;
@@ -3753,7 +3900,7 @@ function clearTaskStepsAfter(stageKey) {
 
   selectedReflectionGroupId.value = null;
   selectedReflectionItemKey.value = null;
-  manuallyRoutedReflectionKeys.value = new Set();
+  clearManualReviewRoutesForTask(selectedTaskId.value);
   reflectionDetailVisible.value = false;
   if (stageKey === "reflect_grading") {
     clearTeacherReviewRequiredRevisionsForTask(selectedTaskId.value);
@@ -3775,6 +3922,7 @@ function clearDeletedTaskData(taskId) {
   clearTaskFileGroup(taskId);
   removeTaskStudentMatches(taskId);
   clearTeacherRevisionsForTask(taskId);
+  clearManualReviewRoutesForTask(taskId);
   if (String(selectedTaskId.value) === String(taskId)) {
     resetTaskDetailState();
     selectedTaskId.value = null;
@@ -3988,6 +4136,7 @@ function openTaskDetail(task) {
   selectedTaskId.value = task.id;
   taskMaterialsCollapsed.value = false;
   resetAiGradingState();
+  manuallyRoutedReflectionKeys.value = new Set(manualReviewRouteMap.value[String(task.id)] ?? []);
   const normalized = normalizeProgressStageKey(task.current_stage);
   selectedProgressStageKey.value = taskStages.some((stage) => stage.key === normalized)
     ? normalized
@@ -4009,9 +4158,6 @@ function selectProgressStage(stageKey) {
   }
   if (stageKey === "grade_by_question") {
     ensureAiGradingSelection();
-  }
-  if (stageKey === "reflect_grading") {
-    ensureReflectionSelection();
   }
   if (stageKey === "teacher_review") {
     ensureTeacherReviewSelection();
@@ -5050,6 +5196,7 @@ async function fetchTaskGradingResults(taskId) {
       stage: "grade_by_question",
       results: gradingResults,
     };
+    await fetchTaskTeacherRevisions(taskId);
   } catch {
     resetAiGradingState();
   }
@@ -5058,13 +5205,23 @@ async function fetchTaskGradingResults(taskId) {
   ensureTeacherReviewSelection();
 }
 
+async function fetchTaskTeacherRevisions(taskId) {
+  if (!taskId) return;
+  try {
+    const revisions = await getTaskTeacherRevisions(taskId);
+    mergeBackendTeacherRevisions(taskId, revisions);
+  } catch {
+    // Keep local review drafts available when the backend endpoint is unreachable.
+  }
+}
+
 async function parseSelectedTaskFiles() {
   if (!selectedTaskId.value) return;
   if (taskQuestions.value.length || selectedTask.value?.status !== "created") {
     const confirmed = await confirmRestartStep({
       title: "重新解析任务材料",
       message:
-        "重新解析成功后，将清空题目分析、评分量规、学生解析、答案抽取、证据、AI评分、反思校准、教师复核与修订记录。解析失败时，当前记录会保留。",
+        "重新解析成功后，将清空题目分析、评分量规、学生解析、答案抽取、证据、AI评分、教师复核与修订记录。解析失败时，当前记录会保留。",
       confirmText: "确认重新解析",
     });
     if (!confirmed) return;
@@ -5107,7 +5264,7 @@ async function runStudentPrepare() {
   if (taskHasStoredStudentMatches.value) {
     const confirmed = await confirmRestartStep({
       title: "重新解析学生",
-      message: "重新解析学生会替换当前学生作业匹配结果，并清空后续答案抽取、证据、AI评分、反思校准和教师复核记录。",
+      message: "重新解析学生会替换当前学生作业匹配结果，并清空后续答案抽取、证据、AI评分和教师复核记录。",
       confirmText: "确认重新解析",
     });
     if (!confirmed) return;
@@ -5172,7 +5329,7 @@ async function runAnswerExtraction(force = false) {
   if (force && answerExtractionHasAnswers.value) {
     const confirmed = await confirmRestartStep({
       title: "重新抽取答案",
-      message: "重新抽取会替换当前学生答案，并清空后续证据、AI评分、反思校准和教师复核记录。",
+      message: "重新抽取会替换当前学生答案，并清空后续证据、AI评分和教师复核记录。",
       confirmText: "确认重新抽取",
     });
     if (!confirmed) return;
@@ -5231,7 +5388,7 @@ async function runEvidenceExtraction(force = false) {
   if (force && evidenceExtractionHasEvidence.value) {
     const confirmed = await confirmRestartStep({
       title: "重新提取证据",
-      message: "重新提取会替换当前评分证据，并清空后续 AI评分、反思校准和教师复核记录。",
+      message: "重新提取会替换当前评分证据，并清空后续 AI评分和教师复核记录。",
       confirmText: "确认重新提取",
     });
     if (!confirmed) return;
@@ -5274,8 +5431,8 @@ async function runAiGrading(force = false) {
     if (aiGradingCompletedAnswerCount.value || aiGradingAiEligibleAnswerCount.value === 0) {
       taskStore.updateTask(selectedTaskId.value, {
         status: "graded",
-        current_stage: "reflect_grading",
-        progress: taskProgressForStage("reflect_grading"),
+        current_stage: "teacher_review",
+        progress: taskProgressForStage("teacher_review"),
       });
     }
     ElMessage.info("没有剩余答案需要 AI 评分");
@@ -5340,12 +5497,16 @@ async function runAiGrading(force = false) {
     if (completed) {
       taskStore.updateTask(selectedTaskId.value, {
         status: "graded",
-        current_stage: "reflect_grading",
-        progress: taskProgressForStage("reflect_grading"),
+        current_stage: "teacher_review",
+        progress: taskProgressForStage("teacher_review"),
       });
     }
-    selectedProgressStageKey.value = "grade_by_question";
-    ensureAiGradingSelection();
+    selectedProgressStageKey.value = completed ? "teacher_review" : "grade_by_question";
+    if (completed) {
+      ensureTeacherReviewSelection();
+    } else {
+      ensureAiGradingSelection();
+    }
     ElMessage.success(completed ? "AI评分完成" : "本轮可评分答案已处理完成");
   } catch (error) {
     taskAiGrading.value = {
@@ -5454,7 +5615,7 @@ async function runQuestionAnalysis() {
     const confirmed = await confirmRestartStep({
       title: "重新分析题目",
       message:
-        "重新分析成功后，将替换当前题目，并清空后续步骤生成的评分量规、学生解析、答案抽取、证据、AI评分、反思校准、教师复核与修订记录。模型失败或结果校验失败时，当前记录会保留。",
+        "重新分析成功后，将替换当前题目，并清空后续步骤生成的评分量规、学生解析、答案抽取、证据、AI评分、教师复核与修订记录。模型失败或结果校验失败时，当前记录会保留。",
       confirmText: "确认重新分析",
     });
     if (!confirmed) return;
@@ -5871,6 +6032,19 @@ function questionLabel(questionId) {
   return `${question.question_number}. ${question.content}`;
 }
 
+function questionNumberLabel(questionId) {
+  const question = taskQuestions.value.find((item) => item.id === questionId);
+  if (!question) return `第${questionId}题`;
+  const rawNumber = String(question.question_number ?? "").trim();
+  const embedded = rawNumber.match(/第\s*([0-9一二三四五六七八九十百]+)\s*题/);
+  const leading = rawNumber.match(/^\s*([0-9一二三四五六七八九十百]+)/);
+  const cleanedNumber = embedded?.[1]
+    ?? leading?.[1]
+    ?? rawNumber.split(/\s+/)[0]?.replace(/[.、:：)]$/, "")
+    ?? "";
+  return cleanedNumber ? `第${cleanedNumber}题` : `第${questionId}题`;
+}
+
 function evidenceForRubric(question, rubricId) {
   return (question?.evidence_items ?? []).find((item) => item.rubric_id === rubricId) ?? null;
 }
@@ -6082,21 +6256,14 @@ function openReflectionDetail(item) {
 }
 
 function markReflectionForReview(item) {
-  const targetAnswerId = String(item.grading_result?.student_answer_id ?? "");
   selectedReflectionItemKey.value = item.key;
-  manuallyRoutedReflectionKeys.value = new Set([...manuallyRoutedReflectionKeys.value, item.key]);
-  taskAiGrading.value = {
-    ...taskAiGrading.value,
-    results: aiGradingResults.value.map((result) =>
-      String(result.student_answer_id) === targetAnswerId
-        ? {
-            ...result,
-            review_required: true,
-            review_priority: "urgent",
-          }
-        : result,
-    ),
+  const nextRoutes = new Set([...manuallyRoutedReflectionKeys.value, item.key]);
+  manuallyRoutedReflectionKeys.value = nextRoutes;
+  manualReviewRouteMap.value = {
+    ...manualReviewRouteMap.value,
+    [String(selectedTaskId.value)]: [...nextRoutes],
   };
+  writeLocalManualReviewRouteMap(manualReviewRouteMap.value);
   ElMessage.success("已标记进入教师复核");
 }
 
@@ -6262,8 +6429,26 @@ function questionHasReviewReasons(questionItem) {
   return buildQuestionReviewReasons(questionItem).length > 0;
 }
 
-function questionNeedsTeacherReview(questionItem) {
-  return questionHasReviewReasons(questionItem) && !teacherReviewRevisionForResult(questionItem?.grading_result);
+function reflectionRouteKeyForQuestion(student, questionItem) {
+  if (!student || !questionItem) return "";
+  return `${student.submission_id}:${questionItem.question_id}`;
+}
+
+function questionManuallyRoutedForReview(student, questionItem) {
+  const routeKey = reflectionRouteKeyForQuestion(student, questionItem);
+  return Boolean(routeKey && manuallyRoutedReflectionKeys.value.has(routeKey));
+}
+
+function questionInTeacherReviewScope(student, questionItem) {
+  return (
+    questionManuallyRoutedForReview(student, questionItem)
+    || Boolean(teacherReviewRevisionForResult(questionItem?.grading_result))
+  );
+}
+
+function questionNeedsTeacherReview(questionItem, student = selectedTeacherReviewStudent.value) {
+  return (questionHasReviewReasons(questionItem) || questionManuallyRoutedForReview(student, questionItem))
+    && !teacherReviewRevisionForResult(questionItem?.grading_result);
 }
 
 function teacherReviewRevisionKey(result) {
@@ -6292,6 +6477,12 @@ function teacherReviewStatusMeta(questionItem) {
 
 function teacherReviewReasons(questionItem) {
   return buildQuestionReviewReasons(questionItem);
+}
+
+function questionTeacherFinalComment(questionItem) {
+  const result = questionItem?.grading_result;
+  const revision = teacherReviewRevisionForResult(result);
+  return String(revision?.teacher_comment ?? revision?.final_comment ?? result?.final_comment ?? "").trim();
 }
 
 function studentTeacherFinalScore(student) {
@@ -6354,52 +6545,135 @@ function resetTeacherReviewDraft() {
   teacherReviewDraft.revision_reason = "";
 }
 
-function inferTeacherReviewStatus(questionItem, draft) {
+function draftChangesScore(questionItem, draft) {
   const aiScore = Number(questionItem?.grading_result?.score ?? 0);
   const finalScore = Number(draft?.final_score ?? aiScore);
-  const hasRevisionReason = Boolean(draft?.revision_reason?.trim());
-  return finalScore !== aiScore || hasRevisionReason ? "teacher_modified" : "teacher_confirmed";
+  return finalScore !== aiScore;
 }
 
-function saveTeacherReviewRevision(questionItem, draft) {
+function draftChangesTeacherComment(questionItem, draft) {
+  const revision = teacherReviewRevisionForResult(questionItem?.grading_result);
+  const baselineComment = String(
+    revision?.teacher_comment
+      ?? revision?.final_comment
+      ?? questionItem?.grading_result?.ai_comment
+      ?? "",
+  ).trim();
+  const draftComment = String(draft?.teacher_comment ?? draft?.final_comment ?? "").trim();
+  return draftComment !== baselineComment;
+}
+
+function inferTeacherReviewStatus(questionItem, draft) {
+  if (draft?.review_status === "teacher_confirmed") return "teacher_confirmed";
+  if (draft?.review_status === "teacher_modified") return "teacher_modified";
+  return draftChangesScore(questionItem, draft) || draftChangesTeacherComment(questionItem, draft)
+    ? "teacher_modified"
+    : "teacher_confirmed";
+}
+
+function buildTeacherReviewPayload(questionItem, draft) {
+  const result = questionItem?.grading_result;
+  return {
+    final_score: Number(draft.final_score ?? result?.score ?? 0),
+    final_comment: draft.final_comment ?? draft.teacher_comment?.trim() ?? "",
+    revision_reason: draft.revision_reason?.trim() ?? "",
+    review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
+  };
+}
+
+function applyReviewToAiGradingResult(resultId, revision) {
+  taskAiGrading.value = {
+    ...taskAiGrading.value,
+    results: aiGradingResults.value.map((result) =>
+      String(result.id) === String(resultId)
+        ? {
+            ...result,
+            final_score: Number(revision.final_score ?? result.final_score ?? result.score ?? 0),
+            final_comment: revision.final_comment ?? revision.teacher_comment ?? result.final_comment ?? "",
+            review_status: revision.review_status ?? result.review_status,
+            review_required: false,
+          }
+        : result,
+    ),
+  };
+}
+
+async function saveTeacherReviewRevision(questionItem, draft) {
   const result = questionItem?.grading_result;
   const key = teacherReviewRevisionKey(result);
-  if (!selectedTaskId.value || !key) return;
+  if (!selectedTaskId.value || !key) return null;
   const taskKey = String(selectedTaskId.value);
+  const localRevision = normalizeTeacherRevision({
+    grading_result_id: result.id,
+    student_answer_id: result.student_answer_id,
+    student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
+    question_id: questionItem.question_id,
+    final_score: Number(draft.final_score ?? result.score ?? 0),
+    review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
+    final_comment: draft.final_comment ?? draft.teacher_comment?.trim() ?? "",
+    teacher_comment: draft.teacher_comment?.trim() ?? draft.final_comment ?? "",
+    revision_reason: draft.revision_reason?.trim() ?? "",
+    updated_at: new Date().toISOString(),
+  });
   const nextTaskRevisions = {
     ...(teacherRevisionMap.value[taskKey] ?? {}),
-    [key]: {
-      grading_result_id: result.id,
-      student_answer_id: result.student_answer_id,
-      student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
-      question_id: questionItem.question_id,
-      final_score: Number(draft.final_score ?? result.score ?? 0),
-      review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
-      teacher_comment: draft.teacher_comment?.trim() ?? "",
-      revision_reason: draft.revision_reason?.trim() ?? "",
-      updated_at: new Date().toISOString(),
-    },
+    [key]: localRevision,
   };
   teacherRevisionMap.value = {
     ...teacherRevisionMap.value,
     [taskKey]: nextTaskRevisions,
   };
   writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+
+  try {
+    const savedRevision = await reviewTaskGradingResult(
+      selectedTaskId.value,
+      result.id,
+      buildTeacherReviewPayload(questionItem, draft),
+    );
+    const normalizedSavedRevision = normalizeTeacherRevision({
+      ...localRevision,
+      ...savedRevision,
+      student_answer_id: result.student_answer_id,
+      student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
+      question_id: questionItem.question_id,
+    });
+    teacherRevisionMap.value = {
+      ...teacherRevisionMap.value,
+      [taskKey]: {
+        ...(teacherRevisionMap.value[taskKey] ?? {}),
+        [key]: normalizedSavedRevision,
+      },
+    };
+    writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+    applyReviewToAiGradingResult(result.id, normalizedSavedRevision);
+    return normalizedSavedRevision;
+  } catch (error) {
+    applyReviewToAiGradingResult(result.id, localRevision);
+    ElMessage.warning(error?.response?.data?.detail ?? "后端复核保存失败，已暂存到本地");
+    return localRevision;
+  }
 }
 
-function saveTeacherReviewDraft() {
+async function saveTeacherReviewDraft() {
   if (!selectedTeacherReviewQuestion.value) return;
   const maxScore = questionMaxScore(selectedTeacherReviewQuestion.value.question_id);
   if (Number(teacherReviewDraft.final_score ?? 0) > maxScore) {
     ElMessage.warning("最终分不能超过题目满分");
     return;
   }
-  const aiScore = Number(selectedTeacherReviewQuestion.value.grading_result?.score ?? 0);
-  const reviewStatus = inferTeacherReviewStatus(selectedTeacherReviewQuestion.value, teacherReviewDraft);
-  saveTeacherReviewRevision(selectedTeacherReviewQuestion.value, {
+  const reviewStatus = (
+    draftChangesScore(selectedTeacherReviewQuestion.value, teacherReviewDraft)
+    || draftChangesTeacherComment(selectedTeacherReviewQuestion.value, teacherReviewDraft)
+  )
+    ? "teacher_modified"
+    : "teacher_confirmed";
+  const revision = await saveTeacherReviewRevision(selectedTeacherReviewQuestion.value, {
     ...teacherReviewDraft,
     review_status: reviewStatus,
+    revision_reason: reviewStatus === "teacher_confirmed" ? "" : teacherReviewDraft.revision_reason,
   });
+  if (!revision) return;
   taskStore.updateTask(selectedTaskId.value, {
     status: "teacher_reviewed",
     current_stage: "teacher_review",
@@ -6408,22 +6682,83 @@ function saveTeacherReviewDraft() {
   ElMessage.success("复核记录已保存");
 }
 
-function confirmStableTeacherReviewItems() {
+async function confirmStableTeacherReviewItems() {
   const pendingItems = [...teacherReviewPendingStableItems.value];
-  pendingItems.forEach((questionItem) => {
+  if (!pendingItems.length) {
+    ElMessage.info("当前没有待确认的稳定项");
+    return;
+  }
+  await Promise.all(pendingItems.map((questionItem) =>
     saveTeacherReviewRevision(questionItem, {
       final_score: Number(questionItem.grading_result?.score ?? 0),
       review_status: "teacher_confirmed",
       teacher_comment: questionItem.grading_result?.ai_comment ?? "",
-      revision_reason: "批量确认无异常项",
-    });
-  });
+      revision_reason: "",
+    }),
+  ));
   taskStore.updateTask(selectedTaskId.value, {
     status: "teacher_reviewed",
     current_stage: "teacher_review",
     progress: taskProgressForStage("teacher_review"),
   });
   ElMessage.success(`已确认 ${pendingItems.length} 条稳定评分`);
+}
+
+function buildTeacherReviewExportPayload() {
+  const taskKey = String(selectedTaskId.value);
+  const revisions = Object.values(teacherRevisionMap.value[taskKey] ?? {});
+  return {
+    teacher_revisions: revisions.map((revision) => ({
+      grading_result_id: revision.grading_result_id ?? null,
+      student_answer_id: revision.student_answer_id ?? null,
+      student_submission_id: revision.student_submission_id ?? null,
+      question_id: revision.question_id ?? null,
+      final_score: Number(revision.final_score ?? 0),
+      final_comment: revision.final_comment ?? revision.teacher_comment ?? "",
+      teacher_comment: revision.teacher_comment ?? revision.final_comment ?? "",
+      revision_reason: revision.revision_reason ?? "",
+      review_status: revision.review_status ?? "teacher_modified",
+    })),
+  };
+}
+
+function downloadBlobResponse(response, fallbackFilename) {
+  const disposition = response.headers?.["content-disposition"] ?? "";
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/)?.[1];
+  const quotedName = disposition.match(/filename="?([^";]+)"?/)?.[1];
+  const filename = encodedName ? decodeURIComponent(encodedName) : quotedName || fallbackFilename;
+  const url = window.URL.createObjectURL(response.data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+async function runResultExport() {
+  if (!selectedTaskId.value) return;
+  if (!aiGradingResults.value.length) {
+    ElMessage.warning("请先完成 AI 评分，再导出成绩表");
+    return;
+  }
+  exportResultsLoading.value = true;
+  try {
+    const response = await exportTaskResults(selectedTaskId.value, buildTeacherReviewExportPayload());
+    downloadBlobResponse(response, `gradetap-task-${selectedTaskId.value}-results.xlsx`);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "exported",
+      current_stage: "export_results",
+      progress: taskProgressForStage("export_results", "exported"),
+    });
+    selectedProgressStageKey.value = "export_results";
+    ElMessage.success("Excel 成绩表已生成");
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail ?? "导出失败，请确认已有批改结果");
+  } finally {
+    exportResultsLoading.value = false;
+  }
 }
 
 function studentEvidenceCompleted(student) {

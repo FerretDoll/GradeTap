@@ -93,3 +93,21 @@ export async function getTaskGradingResults(taskId) {
   const response = await apiClient.get(`/tasks/${taskId}/grading-results`);
   return response.data;
 }
+
+export async function getTaskTeacherRevisions(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/teacher-revisions`);
+  return response.data;
+}
+
+export async function reviewTaskGradingResult(taskId, resultId, payload) {
+  const response = await apiClient.put(`/tasks/${taskId}/grading-results/${resultId}/review`, payload);
+  return response.data;
+}
+
+export async function exportTaskResults(taskId, payload) {
+  const response = await apiClient.post(`/tasks/${taskId}/export-results`, payload, {
+    responseType: "blob",
+    timeout: LONG_RUNNING_TASK_TIMEOUT,
+  });
+  return response;
+}

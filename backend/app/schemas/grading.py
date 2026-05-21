@@ -145,6 +145,14 @@ class TeacherRevisionRead(TeacherRevisionBase):
     created_at: datetime
 
 
+class TeacherReviewUpdate(BaseModel):
+    final_score: float = Field(..., ge=0)
+    final_comment: str = Field(default="")
+    revision_reason: str = Field(default="")
+    review_status: ReviewStatus | None = None
+    teacher_id: Optional[int] = None
+
+
 from app.schemas.question import QuestionRead, QuestionRubricRead  # noqa: E402
 
 GradeByQuestionRequest.model_rebuild()
