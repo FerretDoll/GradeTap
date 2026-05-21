@@ -54,7 +54,38 @@
 
     <el-container class="main-shell">
       <el-header class="topbar">
-        <div class="page-title">
+        <div v-if="activeView === 'taskDetail'" class="page-title page-title--detail">
+          <span class="eyebrow">Teacher Review Console</span>
+          <div class="topbar-detail-path">
+            <button type="button" class="topbar-detail-path-button" @click="returnToList">
+              批改任务工作台
+            </button>
+            <span class="topbar-detail-path-arrow">›</span>
+            <h1>{{ selectedTask?.task_name || "批改任务" }}</h1>
+            <el-tag class="status-tag" effect="light">{{ selectedTask?.status || "created" }}</el-tag>
+          </div>
+          <p>{{ selectedTask?.course_name }} / {{ selectedTask?.class_name }}</p>
+        </div>
+        <div v-else-if="activeView === 'courseDetail'" class="page-title page-title--detail">
+          <span class="eyebrow">Course Management</span>
+          <div class="topbar-detail-path">
+            <button type="button" class="topbar-detail-path-button" @click="returnToList">
+              课程管理
+            </button>
+            <span class="topbar-detail-path-arrow">›</span>
+            <h1>{{ selectedCourse?.course_name || "课程" }}</h1>
+            <el-tag effect="plain">{{ selectedCourse?.assignment_count ?? 0 }} 个作业</el-tag>
+          </div>
+          <el-tooltip
+            :content="descriptionText(selectedCourse?.description, '未填写课程说明')"
+            :disabled="!descriptionExceedsLimit(selectedCourse?.description, DESCRIPTION_DETAIL_LIMIT)"
+            placement="bottom-start"
+            popper-class="description-tooltip"
+          >
+            <p>{{ truncatedDescription(selectedCourse?.description, "未填写课程说明", DESCRIPTION_DETAIL_LIMIT) }}</p>
+          </el-tooltip>
+        </div>
+        <div v-else class="page-title">
           <span class="eyebrow">{{ currentPage.eyebrow }}</span>
           <h1>{{ currentPage.title }}</h1>
         </div>
@@ -139,7 +170,14 @@
                     <template #default="{ row }">
                       <button class="task-name-cell task-name-button" @click="openTaskDetail(row)">
                         <strong>{{ row.task_name }}</strong>
-                        <span>{{ row.grading_instruction || "未填写批改说明" }}</span>
+                        <el-tooltip
+                          :content="descriptionText(row.grading_instruction, '未填写批改说明')"
+                          :disabled="!descriptionExceedsLimit(row.grading_instruction, DESCRIPTION_LIST_LIMIT)"
+                          placement="top-start"
+                          popper-class="description-tooltip"
+                        >
+                          <span>{{ truncatedDescription(row.grading_instruction, "未填写批改说明", DESCRIPTION_LIST_LIMIT) }}</span>
+                        </el-tooltip>
                       </button>
                     </template>
                   </el-table-column>
@@ -162,24 +200,26 @@
               </div>
             </section>
 
-            <section v-else-if="activeView === 'taskDetail'" class="task-detail">
-              <div class="panel detail-header">
-                <div>
-                  <span class="section-kicker">Task Detail</span>
-                  <h2>{{ selectedTask?.task_name || "批改任务" }}</h2>
-                  <p>{{ selectedTask?.course_name }} / {{ selectedTask?.class_name }}</p>
-                </div>
-                <div class="detail-header-actions">
-                  <el-tag class="status-tag" effect="light">{{ selectedTask?.status || "created" }}</el-tag>
-                </div>
-              </div>
-
-              <div class="detail-grid">
+            <section v-else-if="activeView === 'taskDetail'" class="task-detail task-detail-layout">
+              <div
+                class="detail-grid task-detail-grid"
+                :class="{ 'task-detail-grid--materials-collapsed': taskMaterialsCollapsed }"
+              >
                 <div class="panel progress-panel" :class="{ 'runtime-flow': questionAnalysisLoading }">
                   <div class="panel-heading">
                     <div>
                       <span class="section-kicker">Progress</span>
                       <h2>批改进度</h2>
+                      <el-tooltip
+                        :content="descriptionText(selectedTask?.grading_instruction, '未填写批改说明')"
+                        :disabled="!descriptionExceedsLimit(selectedTask?.grading_instruction, DESCRIPTION_DETAIL_LIMIT)"
+                        placement="bottom-start"
+                        popper-class="description-tooltip"
+                      >
+                        <p class="progress-panel-description">
+                          {{ truncatedDescription(selectedTask?.grading_instruction, "未填写批改说明", DESCRIPTION_DETAIL_LIMIT) }}
+                        </p>
+                      </el-tooltip>
                     </div>
                   </div>
                   <el-progress
@@ -243,6 +283,10 @@
                         <span class="section-kicker">Reflection</span>
                         <h3>{{ reflectionFlaggedCount }}/{{ reflectionItems.length }} 条评分需关注</h3>
                       </div>
+                      <div v-else-if="activeProgressStage.key === 'teacher_review'">
+                        <span class="section-kicker">Teacher Review</span>
+                        <h3>{{ teacherReviewCompletedCount }}/{{ teacherReviewTotalCount }} 条复核已确认</h3>
+                      </div>
                       <div v-else-if="activeProgressStage.key === 'analyze_questions'">
                         <span class="section-kicker">{{ activeProgressStage.eyebrow }}</span>
                         <h3>{{ activeProgressStage.title }}</h3>
@@ -267,6 +311,12 @@
                         <el-tag v-if="activeProgressStage.key === 'reflect_grading'" effect="plain">
                           {{ reflectionUrgentCount }} 个高优先级
                         </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'teacher_review'" effect="plain">
+                          {{ teacherReviewRequiredCount }} 条待复核
+                        </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'teacher_review'" effect="plain">
+                          {{ teacherReviewModifiedCount }} 条已修改
+                        </el-tag>
                         <template v-if="activeProgressStage.key === 'analyze_questions'">
                           <el-button
                             size="small"
@@ -280,11 +330,11 @@
                         <template v-else-if="activeProgressStage.key === 'prepare_students'">
                           <el-button
                             size="small"
-                            :type="selectedTaskStudentMatches.length ? 'warning' : 'primary'"
+                            :type="taskHasStoredStudentMatches ? 'warning' : 'primary'"
                             :loading="studentPrepareLoading"
                             @click="runStudentPrepare"
                           >
-                            {{ selectedTaskStudentMatches.length ? "重新解析学生" : "开始学生解析" }}
+                            {{ taskHasStoredStudentMatches ? "重新解析学生" : "开始学生解析" }}
                           </el-button>
                         </template>
                         <template v-else-if="activeProgressStage.key === 'extract_answers'">
@@ -360,18 +410,46 @@
                             size="small"
                             type="primary"
                             :disabled="!aiGradingResults.length"
-                            @click="runReflectGrading"
+                            :loading="reflectionLoading"
+                            @click="runReflectGrading(false)"
                           >
-                            {{ reflectionItems.length ? "重新校准评分" : "开始反思校准" }}
+                            {{ reflectionItems.length ? "继续校准评分" : "开始反思校准" }}
+                          </el-button>
+                          <el-button
+                            v-if="reflectionItems.length"
+                            size="small"
+                            type="warning"
+                            :disabled="!aiGradingResults.length"
+                            :loading="reflectionLoading"
+                            @click="runReflectGrading(true)"
+                          >
+                            重新校准评分
                           </el-button>
                           <el-select v-model="reflectionFilter" size="small" class="reflection-filter-select">
                             <el-option label="全部结果" value="all" />
                             <el-option label="只看需复核" value="review" />
                             <el-option label="高优先级" value="urgent" />
                             <el-option label="低置信度" value="low_confidence" />
-                            <el-option label="证据冲突" value="evidence_conflict" />
+                            <el-option label="证据与得分不一致" value="evidence_conflict" />
                             <el-option label="已通过" value="passed" />
                           </el-select>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'teacher_review'">
+                          <el-select v-model="teacherReviewFilter" size="small" class="teacher-review-filter-select">
+                            <el-option label="全部题目" value="all" />
+                            <el-option label="待复核" value="required" />
+                            <el-option label="已确认" value="confirmed" />
+                            <el-option label="已修改" value="modified" />
+                            <el-option label="高优先级" value="urgent" />
+                          </el-select>
+                          <el-button
+                            size="small"
+                            type="success"
+                            :disabled="!teacherReviewPendingStableItems.length"
+                            @click="confirmStableTeacherReviewItems"
+                          >
+                            批量确认稳定项
+                          </el-button>
                         </template>
                       </div>
                     </div>
@@ -759,7 +837,7 @@
                               class="ai-grading-question-card"
                               :class="{
                                 active: questionItem.question_id === selectedAiGradingQuestion?.question_id,
-                                warning: questionItem.grading_result?.review_required,
+                                warning: questionHasReviewReasons(questionItem),
                               }"
                               @click="selectAiGradingQuestion(questionItem.question_id)"
                             >
@@ -789,12 +867,7 @@
                         <div class="ai-grading-evidence-view">
                           <div class="answer-column-heading">
                             <strong>{{ selectedAiGradingQuestionTitle }}</strong>
-                            <el-tag
-                              :type="selectedAiGradingQuestion?.grading_result?.review_required ? 'warning' : 'success'"
-                              effect="light"
-                            >
-                              {{ selectedAiGradingQuestion?.grading_result?.review_required ? "需复核" : "评分依据" }}
-                            </el-tag>
+                            <el-tag effect="plain">评分依据</el-tag>
                           </div>
                           <div v-if="selectedAiGradingQuestion" class="ai-grading-evidence-body">
                             <section
@@ -927,6 +1000,8 @@
                             size="small"
                             class="task-table reflection-table"
                             empty-text="当前筛选下暂无校准结果"
+                            :row-class-name="reflectionRowClassName"
+                            @row-click="selectReflectionItem"
                           >
                             <el-table-column prop="student_name" label="学生" min-width="120" show-overflow-tooltip />
                             <el-table-column prop="question_number" label="题号" width="90" align="center" />
@@ -979,11 +1054,12 @@
                                 </el-tag>
                               </template>
                             </el-table-column>
-                            <el-table-column label="操作" width="118" fixed="right" align="center">
+                            <el-table-column label="操作" width="118" align="center">
                               <template #default="{ row }">
                                 <div class="icon-actions">
                                   <el-button :icon="Edit" circle text title="查看详情" @click="openReflectionDetail(row)" />
                                   <el-button
+                                    v-if="!reflectionItemManuallyRouted(row)"
                                     :icon="Check"
                                     circle
                                     text
@@ -991,6 +1067,7 @@
                                     title="送入复核"
                                     @click="markReflectionForReview(row)"
                                   />
+                                  <el-tag v-else type="warning" effect="light">已送入</el-tag>
                                 </div>
                               </template>
                             </el-table-column>
@@ -1004,10 +1081,230 @@
                         :image-size="72"
                       />
                     </div>
+                    <div v-else-if="activeProgressStage.key === 'teacher_review'" class="teacher-review-panel">
+                      <div v-if="aiGradingResults.length" class="teacher-review-grid">
+                        <aside class="teacher-review-student-list">
+                          <button
+                            v-for="student in teacherReviewStudents"
+                            :key="student.submission_id"
+                            type="button"
+                            class="teacher-review-student-card"
+                            :class="{
+                              active: student.submission_id === selectedTeacherReviewStudent?.submission_id,
+                              review: student.review_required_count > 0,
+                              done: student.review_completed_count >= student.review_total_count && student.review_total_count > 0,
+                            }"
+                            @click="selectTeacherReviewStudent(student.submission_id)"
+                          >
+                            <div class="teacher-review-student-head">
+                              <div>
+                                <strong>{{ student.student_name }}</strong>
+                                <span>{{ student.student_no || "未填写学号" }}</span>
+                              </div>
+                              <el-tag :type="student.review_required_count ? 'warning' : 'success'" effect="light">
+                                {{ student.review_required_count ? `${student.review_required_count} 待复核` : "稳定" }}
+                              </el-tag>
+                            </div>
+                            <div class="teacher-review-score-line">
+                              <strong>{{ studentTeacherFinalScore(student) }}</strong>
+                              <span>最终总分</span>
+                            </div>
+                            <div class="teacher-review-student-meta">
+                              <span>已确认 {{ student.review_completed_count }}</span>
+                              <span>已修改 {{ student.review_modified_count }}</span>
+                            </div>
+                          </button>
+                        </aside>
+
+                        <section class="teacher-review-question-list">
+                          <div class="answer-column-heading">
+                            <strong>复核题目</strong>
+                            <el-tag effect="plain">{{ filteredTeacherReviewQuestions.length }}/{{ selectedTeacherReviewQuestions.length }} 题</el-tag>
+                          </div>
+                          <div class="teacher-review-question-card-list">
+                            <article
+                              v-for="questionItem in filteredTeacherReviewQuestions"
+                              :key="questionItem.question_id"
+                              class="teacher-review-question-card"
+                              :class="{
+                                active: questionItem.question_id === selectedTeacherReviewQuestion?.question_id,
+                                warning: questionHasReviewReasons(questionItem),
+                                done: teacherReviewRevisionForResult(questionItem.grading_result)?.review_status === 'teacher_confirmed',
+                                modified: teacherReviewRevisionForResult(questionItem.grading_result)?.review_status === 'teacher_modified',
+                              }"
+                              @click="selectTeacherReviewQuestion(questionItem.question_id)"
+                            >
+                              <div class="evidence-question-card-head">
+                                <strong>{{ questionLabel(questionItem.question_id) }}</strong>
+                                <el-tag :type="teacherReviewStatusMeta(questionItem).type" effect="light">
+                                  {{ teacherReviewStatusMeta(questionItem).label }}
+                                </el-tag>
+                              </div>
+                              <div class="teacher-review-question-score">
+                                <span>AI {{ formatScore(questionItem.grading_result?.score) }}</span>
+                                <strong>最终 {{ formatScore(teacherReviewFinalScore(questionItem)) }}</strong>
+                                <small>/ {{ questionMaxScore(questionItem.question_id) }} 分</small>
+                              </div>
+                              <div class="reflection-issue-tags">
+                                <el-tag
+                                  v-for="reason in teacherReviewReasons(questionItem).slice(0, 3)"
+                                  :key="reason.key"
+                                  :type="reason.type"
+                                  effect="light"
+                                >
+                                  {{ reason.label }}
+                                </el-tag>
+                                <el-tag v-if="!teacherReviewReasons(questionItem).length" type="success" effect="light">
+                                  无异常
+                                </el-tag>
+                              </div>
+                            </article>
+                            <el-empty
+                              v-if="!filteredTeacherReviewQuestions.length"
+                              description="当前筛选下暂无复核题目"
+                              :image-size="72"
+                            />
+                          </div>
+                        </section>
+
+                        <section class="teacher-review-detail">
+                          <div class="answer-column-heading">
+                            <strong>{{ selectedTeacherReviewQuestionTitle }}</strong>
+                            <el-tag effect="plain">复核详情</el-tag>
+                          </div>
+                          <div v-if="selectedTeacherReviewQuestion" class="teacher-review-detail-body">
+                            <div class="teacher-review-score-editor">
+                              <div class="teacher-review-score-metrics">
+                                <div>
+                                  <span>AI 分数</span>
+                                  <strong>{{ formatScore(selectedTeacherReviewQuestion.grading_result?.score) }}</strong>
+                                </div>
+                                <div>
+                                  <span>题目满分</span>
+                                  <strong>{{ formatScore(questionMaxScore(selectedTeacherReviewQuestion.question_id)) }}</strong>
+                                </div>
+                                <div>
+                                  <span>置信度</span>
+                                  <strong>{{ formatPercent(selectedTeacherReviewQuestion.grading_result?.confidence ?? 0) }}</strong>
+                                </div>
+                              </div>
+                              <el-form :model="teacherReviewDraft" label-position="top" class="teacher-review-form">
+                                <div class="form-grid">
+                                  <el-form-item label="教师最终分">
+                                    <el-input-number
+                                      v-model="teacherReviewDraft.final_score"
+                                      :min="0"
+                                      :max="questionMaxScore(selectedTeacherReviewQuestion.question_id)"
+                                      :step="0.5"
+                                      class="form-control"
+                                    />
+                                  </el-form-item>
+                                </div>
+                                <el-form-item label="教师评语">
+                                  <el-input
+                                    v-model="teacherReviewDraft.teacher_comment"
+                                    type="textarea"
+                                    :rows="3"
+                                    placeholder="记录给学生看的最终反馈。"
+                                  />
+                                </el-form-item>
+                                <el-form-item label="修订原因">
+                                  <el-input
+                                    v-model="teacherReviewDraft.revision_reason"
+                                    type="textarea"
+                                    :rows="2"
+                                    placeholder="如修改了分数，请说明原因，便于后续追踪。"
+                                  />
+                                </el-form-item>
+                                <div class="teacher-review-actions">
+                                  <el-button @click="resetTeacherReviewDraft">恢复 AI 分数</el-button>
+                                  <el-button type="primary" :icon="Check" @click="saveTeacherReviewDraft">
+                                    确认当前复核
+                                  </el-button>
+                                </div>
+                              </el-form>
+                            </div>
+
+                            <section class="reflection-detail-section">
+                              <div class="reflection-detail-title">
+                                <strong>学生答案</strong>
+                                <el-tag effect="plain">
+                                  {{ answerStatusMeta(selectedTeacherReviewQuestion.extraction_status).label }}
+                                </el-tag>
+                              </div>
+                              <p>{{ selectedTeacherReviewQuestion.answer_text || "未抽取到学生答案。" }}</p>
+                            </section>
+
+                            <section class="reflection-detail-section">
+                              <div class="reflection-detail-title">
+                                <strong>AI 评分理由</strong>
+                                <el-tag
+                                  :type="gradingStatusMeta(selectedTeacherReviewQuestion.grading_result?.grading_status).type"
+                                  effect="light"
+                                >
+                                  {{ gradingStatusMeta(selectedTeacherReviewQuestion.grading_result?.grading_status).label }}
+                                </el-tag>
+                              </div>
+                              <p>{{ selectedTeacherReviewQuestion.grading_result?.ai_comment || "暂无 AI 评语。" }}</p>
+                            </section>
+
+                            <article
+                              v-for="row in selectedTeacherReviewDimensionRows"
+                              :key="row.rubric.id"
+                              class="reflection-dimension-card"
+                              :class="{ warning: row.issues.length }"
+                            >
+                              <div class="evidence-dimension-head">
+                                <div>
+                                  <strong>{{ row.rubric.dimension_name }}</strong>
+                                  <span>{{ row.rubric.max_score }} 分 · {{ row.rubric.evidence_requirement }}</span>
+                                </div>
+                                <el-tag :type="row.issues.length ? 'warning' : 'success'" effect="light">
+                                  {{ formatScore(row.score?.score) }} / {{ formatScore(row.rubric.max_score) }}
+                                </el-tag>
+                              </div>
+                              <div class="dimension-snippet-box">
+                                <span>AI 维度理由</span>
+                                <p class="ai-grading-reason">{{ row.score?.reason || "尚未生成该维度评分理由。" }}</p>
+                              </div>
+                              <div class="evidence-pill-grid">
+                                <div>
+                                  <span>正向证据</span>
+                                  <ul v-if="row.positive_evidence.length">
+                                    <li v-for="item in row.positive_evidence" :key="item">{{ item }}</li>
+                                  </ul>
+                                  <p v-else>暂无正向证据</p>
+                                </div>
+                                <div>
+                                  <span>负向证据</span>
+                                  <ul v-if="row.negative_evidence.length">
+                                    <li v-for="item in row.negative_evidence" :key="item">{{ item }}</li>
+                                  </ul>
+                                  <p v-else>暂无负向证据</p>
+                                </div>
+                              </div>
+                            </article>
+                          </div>
+                          <el-empty
+                            v-else
+                            class="student-parse-empty"
+                            description="请选择需要复核的题目"
+                            :image-size="72"
+                          />
+                        </section>
+                      </div>
+                      <el-empty
+                        v-else
+                        class="student-parse-empty"
+                        description="请先完成 AI 评分和复核分流，再进入教师复核"
+                        :image-size="72"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <div class="panel material-panel">
+                <Transition name="assignment-material">
+                  <div v-if="!taskMaterialsCollapsed" class="panel material-panel">
                   <div class="panel-heading">
                     <div>
                       <span class="section-kicker">Files</span>
@@ -1094,18 +1391,17 @@
                             class="uploaded-file-item"
                           >
                             <div class="uploaded-file-main">
-                              <span :title="file.file_name">{{ file.file_name }}</span>
+                              <button
+                                type="button"
+                                class="uploaded-file-name-button"
+                                :title="file.file_name"
+                                @click="openParsedTextPreview(file)"
+                              >
+                                {{ file.file_name }}
+                              </button>
                               <small v-if="file.parsed_text">解析文本 {{ file.parsed_text.length }} 字</small>
                               <small v-else>尚未解析</small>
                             </div>
-                            <el-button
-                              v-if="file.parsed_text"
-                              text
-                              size="small"
-                              @click="openParsedTextPreview(file)"
-                            >
-                              查看
-                            </el-button>
                             <el-button
                               :icon="Delete"
                               circle
@@ -1121,7 +1417,8 @@
                       </template>
                     </div>
                   </div>
-                </div>
+                  </div>
+                </Transition>
               </div>
             </section>
 
@@ -1149,7 +1446,14 @@
                     <template #default="{ row }">
                       <button class="task-name-cell task-name-button" @click="openCourseDetail(row)">
                         <strong>{{ row.course_name }}</strong>
-                        <span>{{ row.description || "未填写课程说明" }}</span>
+                        <el-tooltip
+                          :content="descriptionText(row.description, '未填写课程说明')"
+                          :disabled="!descriptionExceedsLimit(row.description, DESCRIPTION_LIST_LIMIT)"
+                          placement="top-start"
+                          popper-class="description-tooltip"
+                        >
+                          <span>{{ truncatedDescription(row.description, "未填写课程说明", DESCRIPTION_LIST_LIMIT) }}</span>
+                        </el-tooltip>
                       </button>
                     </template>
                   </el-table-column>
@@ -1166,21 +1470,14 @@
               </div>
             </section>
 
-            <section v-else-if="activeView === 'courseDetail'" class="task-detail">
-              <div class="panel detail-header">
-                <div>
-                  <span class="section-kicker">Course Detail</span>
-                  <div class="heading-title-row">
-                    <h2>{{ selectedCourse?.course_name || "课程" }}</h2>
-                    <el-tag effect="plain">{{ selectedCourse?.assignment_count ?? 0 }} 个作业</el-tag>
-                  </div>
-                  <p>{{ selectedCourse?.description || "未填写课程说明" }}</p>
-                </div>
-              </div>
-
+            <section v-else-if="activeView === 'courseDetail'" class="task-detail course-detail-layout">
               <div
                 class="detail-grid course-assignment-grid"
-                :class="{ 'course-assignment-grid--selected': courseAssignmentLayoutExpanded }"
+                :class="{
+                  'course-assignment-grid--selected': courseAssignmentLayoutExpanded,
+                  'course-assignment-grid--materials-collapsed':
+                    courseAssignmentLayoutExpanded && assignmentMaterialsCollapsed,
+                }"
               >
                 <div class="panel student-roster-panel course-assignment-list-panel">
                   <div class="panel-heading">
@@ -1199,10 +1496,23 @@
                           <strong>{{ selectedCourseAssignment.assignment_name }}</strong>
                         </template>
                       </div>
+                      <el-tooltip
+                        v-if="selectedCourseAssignment"
+                        :content="descriptionText(selectedCourseAssignment.description, '可先上传作业文件和答案文件，后续批改任务从这里引用。')"
+                        :disabled="!descriptionExceedsLimit(selectedCourseAssignment.description, DESCRIPTION_DETAIL_LIMIT)"
+                        placement="bottom-start"
+                        popper-class="description-tooltip"
+                      >
+                        <p class="course-assignment-description">
+                          {{ truncatedDescription(selectedCourseAssignment.description, "可先上传作业文件和答案文件，后续批改任务从这里引用。", DESCRIPTION_DETAIL_LIMIT) }}
+                        </p>
+                      </el-tooltip>
                     </div>
-                    <el-button v-if="!selectedCourseAssignment" type="primary" :icon="Plus" @click="openCreateAssignment">
-                      新建作业
-                    </el-button>
+                    <div v-if="!selectedCourseAssignment" class="assignment-heading-status">
+                      <el-button type="primary" :icon="Plus" @click="openCreateAssignment">
+                        新建作业
+                      </el-button>
+                    </div>
                     <div v-else class="assignment-heading-status">
                       <el-tag :type="selectedAssignmentRubricConfirmed ? 'success' : 'warning'" effect="light">
                         {{ selectedAssignmentRubricConfirmed ? "量规已绑定" : "待确认量规" }}
@@ -1225,7 +1535,14 @@
                           @click="selectCourseAssignment(row)"
                         >
                           <strong>{{ row.assignment_name }}</strong>
-                          <span>{{ row.description || "未填写作业说明" }}</span>
+                          <el-tooltip
+                            :content="descriptionText(row.description, '未填写作业说明')"
+                            :disabled="!descriptionExceedsLimit(row.description, DESCRIPTION_LIST_LIMIT)"
+                            placement="top-start"
+                            popper-class="description-tooltip"
+                          >
+                            <span>{{ truncatedDescription(row.description, "未填写作业说明", DESCRIPTION_LIST_LIMIT) }}</span>
+                          </el-tooltip>
                         </button>
                       </template>
                     </el-table-column>
@@ -1419,13 +1736,15 @@
                 </div>
 
                 <Transition name="assignment-material">
-                  <div v-if="selectedCourseAssignment" class="panel course-assignment-material-panel">
+                  <div
+                    v-if="selectedCourseAssignment && !assignmentMaterialsCollapsed"
+                    class="panel course-assignment-material-panel"
+                  >
                     <div class="panel-heading">
                       <div>
                         <span class="section-kicker">Materials</span>
                         <div class="heading-title-row">
                           <h2>作业文件与答案</h2>
-                          <el-tag effect="plain">{{ uploadedAssignmentFileCount }} 个文件</el-tag>
                         </div>
                       </div>
                       <div class="material-heading-actions">
@@ -1438,10 +1757,6 @@
                           解析材料
                         </el-button>
                       </div>
-                    </div>
-                    <div class="assignment-material-title">
-                      <strong>{{ selectedCourseAssignment.assignment_name }}</strong>
-                      <span>{{ selectedCourseAssignment.description || "可先上传作业文件和答案文件，后续批改任务从这里引用。" }}</span>
                     </div>
                     <div v-loading="assignmentFilesLoading" class="material-upload-list">
                       <div v-for="material in assignmentMaterials" :key="material.role" class="material-upload-card">
@@ -1471,18 +1786,17 @@
                         <div class="uploaded-file-list">
                           <div v-for="file in assignmentFilesForRole(material.role)" :key="file.id" class="uploaded-file-item">
                             <div class="uploaded-file-main">
-                              <span :title="file.file_name">{{ file.file_name }}</span>
+                              <button
+                                type="button"
+                                class="uploaded-file-name-button"
+                                :title="file.file_name"
+                                @click="openParsedTextPreview(file)"
+                              >
+                                {{ file.file_name }}
+                              </button>
                               <small v-if="file.parsed_text">解析文本 {{ file.parsed_text.length }} 字</small>
                               <small v-else>尚未解析</small>
                             </div>
-                            <el-button
-                              v-if="file.parsed_text"
-                              text
-                              size="small"
-                              @click="openParsedTextPreview(file)"
-                            >
-                              查看
-                            </el-button>
                             <el-button
                               :icon="Delete"
                               circle
@@ -1757,6 +2071,35 @@
     </el-container>
   </el-container>
 
+  <Teleport to="body">
+    <button
+      v-if="activeView === 'taskDetail'"
+      type="button"
+      class="material-side-toggle"
+      :aria-label="taskMaterialsCollapsed ? '展开任务材料' : '收起任务材料'"
+      @click="taskMaterialsCollapsed = !taskMaterialsCollapsed"
+    >
+      <el-icon>
+        <Expand v-if="taskMaterialsCollapsed" />
+        <Fold v-else />
+      </el-icon>
+      <span>{{ taskMaterialsCollapsed ? "展开材料" : "收起材料" }}</span>
+    </button>
+    <button
+      v-else-if="activeView === 'courseDetail' && selectedCourseAssignment"
+      type="button"
+      class="material-side-toggle"
+      :aria-label="assignmentMaterialsCollapsed ? '展开作业材料' : '收起作业材料'"
+      @click="assignmentMaterialsCollapsed = !assignmentMaterialsCollapsed"
+    >
+      <el-icon>
+        <Expand v-if="assignmentMaterialsCollapsed" />
+        <Fold v-else />
+      </el-icon>
+      <span>{{ assignmentMaterialsCollapsed ? "展开材料" : "收起材料" }}</span>
+    </button>
+  </Teleport>
+
   <el-dialog v-model="taskDialogVisible" :title="editingTaskId ? '编辑批改任务' : '新建批改任务'" width="600px" :lock-scroll="false" class="task-dialog">
     <el-form :model="form" label-position="top">
       <el-form-item label="任务名称">
@@ -2001,7 +2344,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Back,
@@ -2076,9 +2419,13 @@ const activeView = ref("tasks");
 const sidebarCollapsed = ref(false);
 const selectedTaskId = ref(null);
 const AI_GRADING_BATCH_SIZE = 5;
+const DESCRIPTION_LIST_LIMIT = 28;
+const DESCRIPTION_DETAIL_LIMIT = 46;
+const taskMaterialsCollapsed = ref(false);
 const selectedCourseId = ref(null);
 const selectedCourseAssignmentId = ref(null);
 const courseAssignmentLayoutExpanded = ref(false);
+const assignmentMaterialsCollapsed = ref(false);
 const selectedClassId = ref(null);
 const selectedProgressStageKey = ref("");
 const selectedAssignmentRubricStageKey = ref("");
@@ -2111,6 +2458,7 @@ const studentPrepareLoading = ref(false);
 const answerExtractionLoading = ref(false);
 const evidenceExtractionLoading = ref(false);
 const aiGradingLoading = ref(false);
+const reflectionLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
 const assignmentQuestionAnalysisLoading = ref(false);
@@ -2199,7 +2547,17 @@ const reflectionGroupMode = ref("question");
 const selectedReflectionGroupId = ref(null);
 const reflectionFilter = ref("review");
 const selectedReflectionItemKey = ref(null);
+const manuallyRoutedReflectionKeys = ref(new Set());
 const reflectionDetailVisible = ref(false);
+const selectedTeacherReviewSubmissionId = ref(null);
+const selectedTeacherReviewQuestionId = ref(null);
+const teacherReviewFilter = ref("all");
+const teacherReviewDraft = reactive({
+  final_score: 0,
+  review_status: "teacher_confirmed",
+  teacher_comment: "",
+  revision_reason: "",
+});
 const activeEvidenceSubmissionIds = ref(new Set());
 const activeAiGradingSubmissionIds = ref(new Set());
 const activeEventSources = new Set();
@@ -2218,8 +2576,8 @@ const pageMeta = {
   tasks: { eyebrow: "Teacher Review Console", title: "批改任务工作台" },
   classes: { eyebrow: "Class Operations", title: "班级管理" },
   courses: { eyebrow: "Course Management", title: "课程管理" },
-  taskDetail: { eyebrow: "Task Progress", title: "任务进度" },
-  courseDetail: { eyebrow: "Course Detail", title: "课程明细" },
+  taskDetail: { eyebrow: "Teacher Review Console", title: "批改任务工作台" },
+  courseDetail: { eyebrow: "Course Management", title: "课程管理" },
   classDetail: { eyebrow: "Class Detail", title: "班级明细" },
   llmSettings: { eyebrow: "LLM Runtime", title: "模型设置" },
 };
@@ -2272,6 +2630,9 @@ const selectedTaskStudentMatches = computed(() => {
   if (storedMatches.length) return storedMatches;
   return buildLocalStudentMatches(taskClassStudents.value, selectedTaskFileGroup.value.student_submission ?? []);
 });
+const taskHasStoredStudentMatches = computed(() =>
+  (taskStudentMatchMap.value[String(selectedTaskId.value)] ?? []).length > 0,
+);
 const studentParseMatchedCount = computed(
   () => selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched").length,
 );
@@ -2491,7 +2852,7 @@ const reflectionPassedCount = computed(() =>
   reflectionItems.value.filter((item) => !item.need_human_review && !item.issues.length).length,
 );
 const reflectionLowConfidenceCount = computed(() =>
-  reflectionItems.value.filter((item) => item.confidence < 0.8 || item.issues.includes("low_confidence")).length,
+  reflectionItems.value.filter((item) => item.confidence < 0.8 || item.issues.some(isLowConfidenceIssue)).length,
 );
 const reflectionGroups = computed(() => {
   const groupMap = new Map();
@@ -2531,7 +2892,7 @@ const groupedReflectionItems = computed(() => {
 const filteredReflectionItems = computed(() => groupedReflectionItems.value.filter((item) => {
   if (reflectionFilter.value === "review") return item.need_human_review;
   if (reflectionFilter.value === "urgent") return item.priority === "urgent" || item.priority === "high";
-  if (reflectionFilter.value === "low_confidence") return item.confidence < 0.8 || item.issues.includes("low_confidence");
+  if (reflectionFilter.value === "low_confidence") return item.confidence < 0.8 || item.issues.some(isLowConfidenceIssue);
   if (reflectionFilter.value === "evidence_conflict") return item.issues.includes("negative_evidence_full_score") || item.issues.includes("no_positive_evidence_high_score");
   if (reflectionFilter.value === "passed") return !item.need_human_review && !item.issues.length;
   return true;
@@ -2566,6 +2927,101 @@ const selectedReflectionDimensionRows = computed(() => {
     };
   });
 });
+const teacherReviewStudents = computed(() =>
+  aiGradingStudents.value.map((student) => {
+    const questions = student.questions ?? [];
+    const reviewRequiredCount = questions.filter((question) => questionNeedsTeacherReview(question)).length;
+    const reviewCompletedCount = questions.filter((question) =>
+      Boolean(teacherReviewRevisionForResult(question.grading_result)),
+    ).length;
+    const reviewModifiedCount = questions.filter(
+      (question) => teacherReviewRevisionForResult(question.grading_result)?.review_status === "teacher_modified",
+    ).length;
+    return {
+      ...student,
+      review_required_count: reviewRequiredCount,
+      review_completed_count: reviewCompletedCount,
+      review_modified_count: reviewModifiedCount,
+      review_total_count: questions.length,
+    };
+  }),
+);
+const selectedTeacherReviewStudent = computed(() => {
+  if (!teacherReviewStudents.value.length) return null;
+  return (
+    teacherReviewStudents.value.find((student) => student.submission_id === selectedTeacherReviewSubmissionId.value)
+    ?? teacherReviewStudents.value[0]
+  );
+});
+const selectedTeacherReviewQuestions = computed(() => selectedTeacherReviewStudent.value?.questions ?? []);
+const filteredTeacherReviewQuestions = computed(() => selectedTeacherReviewQuestions.value.filter((question) => {
+  const revision = teacherReviewRevisionForResult(question.grading_result);
+  if (teacherReviewFilter.value === "required") return questionNeedsTeacherReview(question);
+  if (teacherReviewFilter.value === "confirmed") return revision?.review_status === "teacher_confirmed";
+  if (teacherReviewFilter.value === "modified") return revision?.review_status === "teacher_modified";
+  if (teacherReviewFilter.value === "urgent") {
+    return question.grading_result?.review_priority === "urgent" || question.grading_result?.review_priority === "high";
+  }
+  return true;
+}));
+const selectedTeacherReviewQuestion = computed(() => {
+  const candidateQuestions = filteredTeacherReviewQuestions.value.length
+    ? filteredTeacherReviewQuestions.value
+    : selectedTeacherReviewQuestions.value;
+  if (!candidateQuestions.length) return null;
+  return (
+    candidateQuestions.find((question) => question.question_id === selectedTeacherReviewQuestionId.value)
+    ?? candidateQuestions[0]
+  );
+});
+const selectedTeacherReviewQuestionTitle = computed(() =>
+  selectedTeacherReviewQuestion.value ? questionLabel(selectedTeacherReviewQuestion.value.question_id) : "教师复核",
+);
+const selectedTeacherReviewDimensionRows = computed(() => {
+  const questionItem = selectedTeacherReviewQuestion.value;
+  if (!questionItem) return [];
+  const rubrics = taskQuestions.value.find((question) => question.id === questionItem.question_id)?.rubrics ?? [];
+  return rubrics.map((rubric) => {
+    const evidence = evidenceForRubric(questionItem, rubric.id);
+    const score = questionItem.grading_result?.dimension_scores?.find((scoreItem) => scoreItem.rubric_id === rubric.id);
+    const issues = [];
+    if (Number(score?.score ?? 0) >= Number(rubric.max_score ?? 0) && (evidence?.negative_evidence ?? []).length) {
+      issues.push("negative_evidence_full_score");
+    }
+    if (Number(score?.score ?? 0) > Number(rubric.max_score ?? 0) * 0.8 && !(evidence?.positive_evidence ?? []).length) {
+      issues.push("no_positive_evidence_high_score");
+    }
+    return {
+      rubric,
+      evidence,
+      score,
+      issues,
+      positive_evidence: evidence?.positive_evidence ?? [],
+      negative_evidence: evidence?.negative_evidence ?? [],
+    };
+  });
+});
+const teacherReviewTotalCount = computed(() =>
+  teacherReviewStudents.value.reduce((sum, student) => sum + student.review_total_count, 0),
+);
+const teacherReviewRequiredCount = computed(() =>
+  teacherReviewStudents.value.reduce((sum, student) => sum + student.review_required_count, 0),
+);
+const teacherReviewCompletedCount = computed(() =>
+  teacherReviewStudents.value.reduce((sum, student) => sum + student.review_completed_count, 0),
+);
+const teacherReviewModifiedCount = computed(() =>
+  teacherReviewStudents.value.reduce((sum, student) => sum + student.review_modified_count, 0),
+);
+const teacherReviewPendingStableItems = computed(() =>
+  teacherReviewStudents.value.flatMap((student) =>
+    (student.questions ?? []).filter((question) =>
+      question.grading_result
+      && !questionHasReviewReasons(question)
+      && !teacherReviewRevisionForResult(question.grading_result),
+    ),
+  ),
+);
 const llmProviders = [
   {
     label: "DeepSeek",
@@ -2704,7 +3160,7 @@ const taskStages = [
     eyebrow: "Reflection",
     title: "反思校准",
     caption: "检查评分一致性",
-    detail: "检查总分求和、证据冲突、空答案给分、超分和理由不匹配等异常情况。",
+    detail: "检查总分求和、证据与得分不一致、空答案给分、超分和理由不匹配等异常情况。",
   },
   {
     key: "teacher_review",
@@ -2861,11 +3317,13 @@ const LOCAL_CLASS_STUDENTS_KEY = "gradetap.classStudents";
 const LOCAL_LLM_SETTINGS_KEY = "gradetap.llmSettings";
 const LOCAL_TASK_FILES_KEY = "gradetap.taskFiles";
 const LOCAL_TASK_STUDENT_MATCHES_KEY = "gradetap.taskStudentMatches";
+const LOCAL_TEACHER_REVISIONS_KEY = "gradetap.teacherRevisions";
 
 const assignmentFileMap = ref(readLocalAssignmentFileMap());
 const taskFileMap = ref(readLocalTaskFileMap());
 const taskStudentMatchMap = ref(readLocalTaskStudentMatchMap());
 const assignmentRubricMap = ref(readLocalAssignmentRubricMap());
+const teacherRevisionMap = ref(readLocalTeacherRevisionMap());
 
 function readLocalList(key) {
   try {
@@ -2898,6 +3356,14 @@ function readLocalTaskFileMap() {
 function readLocalTaskStudentMatchMap() {
   try {
     return JSON.parse(window.localStorage.getItem(LOCAL_TASK_STUDENT_MATCHES_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+function readLocalTeacherRevisionMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LOCAL_TEACHER_REVISIONS_KEY) ?? "{}");
   } catch {
     return {};
   }
@@ -2951,6 +3417,42 @@ function writeLocalTaskFileMap(map) {
 
 function writeLocalTaskStudentMatchMap(map) {
   window.localStorage.setItem(LOCAL_TASK_STUDENT_MATCHES_KEY, JSON.stringify(map));
+}
+
+function writeLocalTeacherRevisionMap(map) {
+  window.localStorage.setItem(LOCAL_TEACHER_REVISIONS_KEY, JSON.stringify(map));
+}
+
+function clearTeacherRevisionsForTask(taskId) {
+  if (!taskId) return;
+  const nextMap = { ...teacherRevisionMap.value };
+  delete nextMap[String(taskId)];
+  teacherRevisionMap.value = nextMap;
+  writeLocalTeacherRevisionMap(nextMap);
+}
+
+function clearTeacherReviewRequiredRevisionsForTask(taskId) {
+  if (!taskId) return;
+  const taskKey = String(taskId);
+  const currentRevisions = teacherRevisionMap.value[taskKey] ?? {};
+  if (!Object.keys(currentRevisions).length) return;
+
+  const reviewRequiredKeys = new Set(
+    aiGradingStudents.value.flatMap((student) =>
+      (student.questions ?? [])
+        .filter((question) => questionHasReviewReasons(question))
+        .map((question) => teacherReviewRevisionKey(question.grading_result))
+        .filter(Boolean),
+    ),
+  );
+  const keptRevisions = Object.fromEntries(
+    Object.entries(currentRevisions).filter(([key]) => !reviewRequiredKeys.has(key)),
+  );
+  teacherRevisionMap.value = {
+    ...teacherRevisionMap.value,
+    [taskKey]: keptRevisions,
+  };
+  writeLocalTeacherRevisionMap(teacherRevisionMap.value);
 }
 
 function createEmptyAssignmentFileGroup() {
@@ -3111,6 +3613,40 @@ function setTaskFileGroup(taskId, group) {
   writeLocalTaskFileMap(taskFileMap.value);
 }
 
+async function syncTaskAssignmentMaterials(task) {
+  if (!task?.id || !task.course_name || !task.assignment_name) return;
+  const course = courses.value.find((item) => item.course_name === task.course_name);
+  if (!course?.id) return;
+
+  let assignments = readLocalAssignments(course.id);
+  try {
+    const remoteAssignments = await listCourseAssignments(course.id);
+    assignments = mergeById(remoteAssignments, assignments);
+    writeLocalAssignments(course.id, assignments);
+  } catch {
+    // Local assignment data is enough for offline-created tasks.
+  }
+
+  const assignment = assignments.find((item) => item.assignment_name === task.assignment_name);
+  if (!assignment?.id) return;
+
+  try {
+    await fetchCourseAssignmentFiles(course.id, assignment.id);
+  } catch {
+    // fetchCourseAssignmentFiles already preserves local files on failure.
+  }
+
+  const assignmentFileGroup = getAssignmentFileGroup(assignment.id);
+  const currentTaskGroup = getTaskFileGroup(task.id);
+  setTaskFileGroup(task.id, {
+    ...currentTaskGroup,
+    requirement: assignmentFileGroup.requirement.map((file) => normalizeTaskFile(file, "requirement")),
+    reference_answer: assignmentFileGroup.reference_answer.map((file) =>
+      normalizeTaskFile(file, "reference_answer"),
+    ),
+  });
+}
+
 function taskFilesForRole(fileRole) {
   return selectedTaskFileGroup.value[fileRole] ?? [];
 }
@@ -3126,6 +3662,124 @@ function setTaskStudentMatches(taskId, matches) {
 
 function clearTaskStudentMatches(taskId) {
   setTaskStudentMatches(taskId, []);
+}
+
+function clearTaskFileGroup(taskId) {
+  if (!taskId) return;
+  const nextMap = { ...taskFileMap.value };
+  delete nextMap[String(taskId)];
+  taskFileMap.value = nextMap;
+  writeLocalTaskFileMap(taskFileMap.value);
+}
+
+function removeTaskStudentMatches(taskId) {
+  if (!taskId) return;
+  const nextMap = { ...taskStudentMatchMap.value };
+  delete nextMap[String(taskId)];
+  taskStudentMatchMap.value = nextMap;
+  writeLocalTaskStudentMatchMap(taskStudentMatchMap.value);
+}
+
+function resetTaskDetailState() {
+  closeAllEventStreams();
+  taskQuestions.value = [];
+  taskClassStudents.value = [];
+  taskAnswerExtraction.value = null;
+  taskEvidenceExtraction.value = null;
+  resetAiGradingState();
+  questionAnalysisLoading.value = false;
+  studentPrepareLoading.value = false;
+  answerExtractionLoading.value = false;
+  evidenceExtractionLoading.value = false;
+  aiGradingLoading.value = false;
+  reflectionLoading.value = false;
+  taskFilesLoading.value = false;
+  parseFilesLoading.value = false;
+  taskFileDeletingId.value = null;
+  activeEvidenceSubmissionIds.value = new Set();
+  selectedAnswerSubmissionId.value = null;
+  hoveredAnswerQuestionId.value = null;
+  selectedEvidenceSubmissionId.value = null;
+  selectedEvidenceQuestionId.value = null;
+  selectedAiGradingSubmissionId.value = null;
+  selectedAiGradingQuestionId.value = null;
+  evidenceLowConfidenceOnly.value = false;
+  selectedReflectionGroupId.value = null;
+  selectedReflectionItemKey.value = null;
+  manuallyRoutedReflectionKeys.value = new Set();
+  reflectionDetailVisible.value = false;
+  selectedTeacherReviewSubmissionId.value = null;
+  selectedTeacherReviewQuestionId.value = null;
+  teacherReviewFilter.value = "all";
+  taskMaterialsCollapsed.value = false;
+}
+
+function clearTaskStepsAfter(stageKey) {
+  if (stageKey === "parse_files" || stageKey === "analyze_questions") {
+    taskQuestions.value = [];
+    clearTaskStudentMatches(selectedTaskId.value);
+    taskAnswerExtraction.value = null;
+    taskEvidenceExtraction.value = null;
+    resetAiGradingState();
+  } else if (stageKey === "prepare_students") {
+    taskAnswerExtraction.value = null;
+    taskEvidenceExtraction.value = null;
+    resetAiGradingState();
+  } else if (stageKey === "extract_answers") {
+    taskEvidenceExtraction.value = null;
+    resetAiGradingState();
+  } else if (stageKey === "extract_evidence") {
+    resetAiGradingState();
+  }
+
+  if (
+    stageKey === "parse_files"
+    || stageKey === "analyze_questions"
+    || stageKey === "prepare_students"
+    || stageKey === "extract_answers"
+  ) {
+    selectedAnswerSubmissionId.value = null;
+  }
+  if (
+    stageKey === "parse_files"
+    || stageKey === "analyze_questions"
+    || stageKey === "prepare_students"
+    || stageKey === "extract_answers"
+    || stageKey === "extract_evidence"
+  ) {
+    selectedEvidenceSubmissionId.value = null;
+    selectedEvidenceQuestionId.value = null;
+  }
+
+  selectedReflectionGroupId.value = null;
+  selectedReflectionItemKey.value = null;
+  manuallyRoutedReflectionKeys.value = new Set();
+  reflectionDetailVisible.value = false;
+  if (stageKey === "reflect_grading") {
+    clearTeacherReviewRequiredRevisionsForTask(selectedTaskId.value);
+  } else if (
+    stageKey === "parse_files"
+    || stageKey === "analyze_questions"
+    || stageKey === "prepare_students"
+    || stageKey === "extract_answers"
+    || stageKey === "extract_evidence"
+    || stageKey === "grade_by_question"
+  ) {
+    clearTeacherRevisionsForTask(selectedTaskId.value);
+  }
+  selectedTeacherReviewSubmissionId.value = null;
+  selectedTeacherReviewQuestionId.value = null;
+}
+
+function clearDeletedTaskData(taskId) {
+  clearTaskFileGroup(taskId);
+  removeTaskStudentMatches(taskId);
+  clearTeacherRevisionsForTask(taskId);
+  if (String(selectedTaskId.value) === String(taskId)) {
+    resetTaskDetailState();
+    selectedTaskId.value = null;
+    activeView.value = "tasks";
+  }
 }
 
 function openParsedTextPreview(file) {
@@ -3265,11 +3919,32 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  closeAllEventStreams();
+});
+
+watch(
+  selectedTeacherReviewQuestion,
+  (questionItem) => {
+    if (questionItem) {
+      loadTeacherReviewDraft(questionItem);
+    }
+  },
+  { immediate: true },
+);
+
+watch(teacherReviewFilter, () => {
+  selectedTeacherReviewQuestionId.value =
+    filteredTeacherReviewQuestions.value[0]?.question_id
+    ?? selectedTeacherReviewQuestions.value[0]?.question_id
+    ?? null;
+});
+
+function closeAllEventStreams() {
   for (const eventSource of activeEventSources) {
     eventSource.close();
   }
   activeEventSources.clear();
-});
+}
 
 function handleMenuSelect(view) {
   activeView.value = view;
@@ -3311,12 +3986,14 @@ function handleTaskCourseChange() {
 
 function openTaskDetail(task) {
   selectedTaskId.value = task.id;
+  taskMaterialsCollapsed.value = false;
   resetAiGradingState();
   const normalized = normalizeProgressStageKey(task.current_stage);
   selectedProgressStageKey.value = taskStages.some((stage) => stage.key === normalized)
     ? normalized
     : taskStages[0].key;
   activeView.value = "taskDetail";
+  syncTaskAssignmentMaterials(task);
   fetchTaskFiles(task.id);
   fetchTaskQuestions(task.id);
   fetchTaskClassStudents(task);
@@ -3335,6 +4012,9 @@ function selectProgressStage(stageKey) {
   }
   if (stageKey === "reflect_grading") {
     ensureReflectionSelection();
+  }
+  if (stageKey === "teacher_review") {
+    ensureTeacherReviewSelection();
   }
 }
 
@@ -3393,6 +4073,7 @@ function submitTask() {
   editingTaskId.value = null;
   taskDialogVisible.value = false;
   selectedTaskId.value = task?.id ?? null;
+  if (task) syncTaskAssignmentMaterials(task);
   activeView.value = "tasks";
   submitting.value = false;
   ElMessage.success(wasEditing ? "任务已保存" : "任务已创建");
@@ -3420,10 +4101,7 @@ async function deleteTask(task) {
     }
   }
   taskStore.deleteTask(task.id);
-  if (selectedTaskId.value === task.id) {
-    selectedTaskId.value = null;
-    activeView.value = "tasks";
-  }
+  clearDeletedTaskData(task.id);
   ElMessage.success("任务已删除");
 }
 
@@ -3437,6 +4115,7 @@ async function openCourseDetail(course) {
   selectedCourseId.value = course.id;
   selectedCourseAssignmentId.value = null;
   courseAssignmentLayoutExpanded.value = false;
+  assignmentMaterialsCollapsed.value = false;
   courseAssignments.value = [];
   activeView.value = "courseDetail";
   await fetchCourseAssignments(course.id);
@@ -3537,6 +4216,7 @@ function editAssignment(assignment) {
 async function selectCourseAssignment(assignment) {
   if (!selectedCourseId.value) return;
   courseAssignmentLayoutExpanded.value = true;
+  assignmentMaterialsCollapsed.value = false;
   selectedCourseAssignmentId.value = assignment.id;
   selectedAssignmentRubricStageKey.value = "";
   await Promise.all([
@@ -3547,6 +4227,7 @@ async function selectCourseAssignment(assignment) {
 
 function clearCourseAssignmentSelection() {
   courseAssignmentLayoutExpanded.value = false;
+  assignmentMaterialsCollapsed.value = false;
   if (selectedCourseAssignmentId.value) {
     selectedCourseAssignmentId.value = null;
   }
@@ -4374,6 +5055,7 @@ async function fetchTaskGradingResults(taskId) {
   }
   ensureAiGradingSelection();
   ensureReflectionSelection();
+  ensureTeacherReviewSelection();
 }
 
 async function parseSelectedTaskFiles() {
@@ -4386,6 +5068,7 @@ async function parseSelectedTaskFiles() {
       confirmText: "确认重新解析",
     });
     if (!confirmed) return;
+    clearTaskStepsAfter("parse_files");
   }
   parseFilesLoading.value = true;
   try {
@@ -4420,6 +5103,15 @@ async function runStudentPrepare() {
   if (!uploadedStudentSubmissionFileCount.value) {
     ElMessage.warning("请先上传学生作业文件");
     return;
+  }
+  if (taskHasStoredStudentMatches.value) {
+    const confirmed = await confirmRestartStep({
+      title: "重新解析学生",
+      message: "重新解析学生会替换当前学生作业匹配结果，并清空后续答案抽取、证据、AI评分、反思校准和教师复核记录。",
+      confirmText: "确认重新解析",
+    });
+    if (!confirmed) return;
+    clearTaskStepsAfter("prepare_students");
   }
 
   studentPrepareLoading.value = true;
@@ -4484,6 +5176,7 @@ async function runAnswerExtraction(force = false) {
       confirmText: "确认重新抽取",
     });
     if (!confirmed) return;
+    clearTaskStepsAfter("extract_answers");
   }
 
   answerExtractionLoading.value = true;
@@ -4542,6 +5235,7 @@ async function runEvidenceExtraction(force = false) {
       confirmText: "确认重新提取",
     });
     if (!confirmed) return;
+    clearTaskStepsAfter("extract_evidence");
   }
 
   evidenceExtractionLoading.value = true;
@@ -4594,6 +5288,7 @@ async function runAiGrading(force = false) {
       confirmText: "确认重新评分",
     });
     if (!confirmed) return;
+    clearTaskStepsAfter("grade_by_question");
   }
 
   aiGradingLoading.value = true;
@@ -4763,6 +5458,7 @@ async function runQuestionAnalysis() {
       confirmText: "确认重新分析",
     });
     if (!confirmed) return;
+    clearTaskStepsAfter("analyze_questions");
   }
   questionAnalysisLoading.value = true;
   resetLlmStream(taskLlmStream, "analyze_questions");
@@ -4806,6 +5502,21 @@ async function confirmRestartStep({ title, message, confirmText }) {
 function formatKnowledgePoints(points) {
   if (Array.isArray(points)) return points.join("、") || "未识别";
   return points || "未识别";
+}
+
+function descriptionText(value, fallback) {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function descriptionExceedsLimit(value, limit) {
+  return String(value ?? "").trim().length > limit;
+}
+
+function truncatedDescription(value, fallback, limit) {
+  const text = descriptionText(value, fallback);
+  if (String(value ?? "").trim().length <= limit) return text;
+  return `${text.slice(0, limit)}...`;
 }
 
 function difficultyMeta(difficulty) {
@@ -5202,41 +5913,7 @@ function gradingStatusMeta(status) {
 }
 
 function buildAiGradingReviewReasons(questionItem) {
-  if (!questionItem?.grading_result) return [];
-  if (questionItem.grading_result.grading_status === "missing") return [];
-
-  const result = questionItem.grading_result;
-  const reasons = [];
-  const addReason = (key, label, type = "warning") => {
-    if (!reasons.some((item) => item.key === key)) {
-      reasons.push({ key, label, type });
-    }
-  };
-
-  if (result.review_required) addReason("review_required", "AI 标记需复核");
-  if (Number(result.confidence ?? 1) < 0.8) addReason("grading_low_confidence", "评分置信度低");
-  if (Number(questionItem.answer_confidence ?? 1) < 0.8) addReason("answer_low_confidence", "答案抽取不确定");
-  if (!String(questionItem.answer_text ?? "").trim() && Number(result.score ?? 0) > 0) {
-    addReason("empty_answer_scored", "空答案给分", "danger");
-  }
-  if (Number(result.score ?? 0) > questionMaxScore(questionItem.question_id)) {
-    addReason("score_exceeds_max", "超过题目满分", "danger");
-  }
-
-  selectedAiGradingDimensionRows.value.forEach((row) => {
-    const score = Number(row.score?.score ?? 0);
-    const maxScore = Number(row.rubric.max_score ?? 0);
-    if (Number(row.confidence ?? 1) < 0.8) addReason("evidence_low_confidence", "证据置信度低");
-    if (score > maxScore) addReason("dimension_score_exceeds_max", "维度超分", "danger");
-    if (score >= maxScore && row.negative_evidence.length) {
-      addReason("negative_evidence_full_score", "负向证据却给满分");
-    }
-    if (score > maxScore * 0.8 && !row.positive_evidence.length) {
-      addReason("no_positive_evidence_high_score", "正向证据不足但给高分");
-    }
-  });
-
-  return reasons;
+  return buildQuestionReviewReasons(questionItem);
 }
 
 function reviewPriorityMeta(priority) {
@@ -5259,7 +5936,7 @@ function studentAiGradingCompleted(student) {
 }
 
 function studentAiGradingReviewCount(student) {
-  return (student?.questions ?? []).filter((question) => question.grading_result?.review_required).length;
+  return (student?.questions ?? []).filter((question) => questionHasReviewReasons(question)).length;
 }
 
 function studentAiGradingRunning(student) {
@@ -5322,36 +5999,16 @@ function resetAiGradingState(status = "pending") {
 function buildReflectionItem(student, questionItem) {
   const gradingResult = questionItem.grading_result;
   const question = taskQuestions.value.find((item) => item.id === questionItem.question_id) ?? {};
-  const rubrics = question.rubrics ?? [];
-  const dimensionScores = gradingResult?.dimension_scores ?? [];
-  const scoreTotal = dimensionScores.reduce((sum, item) => sum + Number(item.score ?? 0), 0);
   const maxScore = Number(question.total_score ?? 0);
-  const issues = new Set();
   const evidenceItems = questionItem.evidence_items ?? [];
   const evidenceConfidences = evidenceItems.map((item) => Number(item.confidence ?? 0)).filter((value) => value > 0);
   const minEvidenceConfidence = evidenceConfidences.length ? Math.min(...evidenceConfidences) : 1;
-  const confidence = Math.min(Number(gradingResult?.confidence ?? 0), Number(questionItem.answer_confidence ?? 1), minEvidenceConfidence);
-
-  if (Math.abs(scoreTotal - Number(gradingResult?.score ?? 0)) > 0.001) issues.add("score_sum_mismatch");
-  if (Number(gradingResult?.score ?? 0) > maxScore) issues.add("score_exceeds_max");
-  if (!String(questionItem.answer_text ?? "").trim() && Number(gradingResult?.score ?? 0) > 0) issues.add("empty_answer_scored");
-  if (confidence < 0.8) issues.add("low_confidence");
-
-  rubrics.forEach((rubric) => {
-    const evidence = evidenceForRubric(questionItem, rubric.id);
-    const score = dimensionScores.find((item) => item.rubric_id === rubric.id);
-    const dimensionScore = Number(score?.score ?? 0);
-    const maxDimensionScore = Number(rubric.max_score ?? score?.max_score ?? 0);
-    if (dimensionScore > maxDimensionScore) issues.add("dimension_score_exceeds_max");
-    if (dimensionScore >= maxDimensionScore && (evidence?.negative_evidence ?? []).length) {
-      issues.add("negative_evidence_full_score");
-    }
-    if (dimensionScore > maxDimensionScore * 0.8 && !(evidence?.positive_evidence ?? []).length) {
-      issues.add("no_positive_evidence_high_score");
-    }
-  });
-
-  const issueList = [...issues];
+  const answerConfidence = reflectionAnswerConfidence(questionItem);
+  const gradingConfidence = isConfirmedMissingAnswer(questionItem)
+    ? Math.max(Number(gradingResult?.confidence ?? 0), answerConfidence)
+    : Number(gradingResult?.confidence ?? 0);
+  const confidence = Math.min(gradingConfidence, answerConfidence, minEvidenceConfidence);
+  const issueList = buildQuestionReviewReasons(questionItem).map((reason) => reason.key);
   const urgentIssueSet = new Set(["empty_answer_scored", "score_exceeds_max", "dimension_score_exceeds_max", "score_sum_mismatch"]);
   const priority = issueList.some((issue) => urgentIssueSet.has(issue))
     ? "urgent"
@@ -5404,6 +6061,21 @@ function selectReflectionGroup(groupId) {
   selectedReflectionItemKey.value = filteredReflectionItems.value[0]?.key ?? null;
 }
 
+function selectReflectionItem(item) {
+  selectedReflectionItemKey.value = item.key;
+}
+
+function reflectionRowClassName({ row }) {
+  const classes = [];
+  if (row.key === selectedReflectionItemKey.value) classes.push("reflection-row--selected");
+  if (row.need_human_review) classes.push("reflection-row--review");
+  return classes.join(" ");
+}
+
+function reflectionItemManuallyRouted(item) {
+  return manuallyRoutedReflectionKeys.value.has(item.key);
+}
+
 function openReflectionDetail(item) {
   selectedReflectionItemKey.value = item.key;
   reflectionDetailVisible.value = true;
@@ -5411,6 +6083,8 @@ function openReflectionDetail(item) {
 
 function markReflectionForReview(item) {
   const targetAnswerId = String(item.grading_result?.student_answer_id ?? "");
+  selectedReflectionItemKey.value = item.key;
+  manuallyRoutedReflectionKeys.value = new Set([...manuallyRoutedReflectionKeys.value, item.key]);
   taskAiGrading.value = {
     ...taskAiGrading.value,
     results: aiGradingResults.value.map((result) =>
@@ -5426,32 +6100,50 @@ function markReflectionForReview(item) {
   ElMessage.success("已标记进入教师复核");
 }
 
-function runReflectGrading() {
+async function runReflectGrading(force = false) {
   if (!aiGradingResults.value.length) {
     ElMessage.warning("请先完成 AI 评分，再开始反思校准");
     return;
   }
+  if (!selectedTaskId.value) return;
+  if (force && reflectionItems.value.length) {
+    const confirmed = await confirmRestartStep({
+      title: "重新校准评分",
+      message: "重新校准会基于最新 AI 评分、评分证据和量规重新生成反思校准结果，并清空已手动送入复核的选择状态、教师复核确认和教师修改记录。",
+      confirmText: "确认重新校准",
+    });
+    if (!confirmed) return;
+    clearTaskStepsAfter("reflect_grading");
+  }
+
   selectedProgressStageKey.value = "reflect_grading";
-  taskStore.updateTask(selectedTaskId.value, {
-    status: "reflected",
-    current_stage: "teacher_review",
-    progress: taskProgressForStage("teacher_review"),
-  });
-  ensureReflectionSelection();
-  ElMessage.success("反思校准已完成，异常项可送入教师复核");
+  reflectionLoading.value = true;
+  if (!force) {
+    selectedReflectionGroupId.value = null;
+    selectedReflectionItemKey.value = null;
+    reflectionDetailVisible.value = false;
+  }
+
+  try {
+    await fetchTaskQuestions(selectedTaskId.value);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    await fetchTaskGradingResults(selectedTaskId.value);
+    ensureReflectionSelection();
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "reflected",
+      current_stage: "teacher_review",
+      progress: taskProgressForStage("teacher_review"),
+    });
+    ElMessage.success("反思校准已重新生成");
+  } catch {
+    ElMessage.error("反思校准刷新失败，请稍后重试");
+  } finally {
+    reflectionLoading.value = false;
+  }
 }
 
 function reflectionIssueMeta(issue) {
-  const metas = {
-    score_sum_mismatch: { label: "总分不一致", type: "danger" },
-    score_exceeds_max: { label: "超过满分", type: "danger" },
-    dimension_score_exceeds_max: { label: "维度超分", type: "danger" },
-    empty_answer_scored: { label: "空答案给分", type: "danger" },
-    negative_evidence_full_score: { label: "负向证据冲突", type: "warning" },
-    no_positive_evidence_high_score: { label: "证据不足高分", type: "warning" },
-    low_confidence: { label: "低置信度", type: "warning" },
-  };
-  return metas[issue] ?? { label: issue, type: "info" };
+  return reviewReasonMeta(issue);
 }
 
 function reflectionActionMeta(action) {
@@ -5461,6 +6153,277 @@ function reflectionActionMeta(action) {
     regrade: { label: "建议重批", type: "danger" },
   };
   return metas[action] ?? { label: action || "待判断", type: "info" };
+}
+
+function isConfirmedMissingAnswer(questionItem) {
+  return questionItem?.extraction_status === "missing" && !String(questionItem?.answer_text ?? "").trim();
+}
+
+function reflectionAnswerConfidence(questionItem) {
+  if (isConfirmedMissingAnswer(questionItem)) return 1;
+  return Number(questionItem?.answer_confidence ?? 1);
+}
+
+function reviewReasonMeta(key) {
+  const metas = {
+    review_required: { label: "AI 标记需复核", type: "warning" },
+    high_priority: { label: "高优先级复核", type: "warning" },
+    score_sum_mismatch: { label: "总分不一致", type: "danger" },
+    score_exceeds_max: { label: "超过满分", type: "danger" },
+    dimension_score_exceeds_max: { label: "维度超分", type: "danger" },
+    empty_answer_scored: { label: "空答案给分", type: "danger" },
+    grading_low_confidence: { label: "评分置信度低", type: "warning" },
+    answer_low_confidence: { label: "答案抽取不确定", type: "warning" },
+    evidence_low_confidence: { label: "证据置信度低", type: "warning" },
+    negative_evidence_full_score: { label: "负向证据却给满分", type: "warning" },
+    no_positive_evidence_high_score: { label: "正向证据不足但给高分", type: "warning" },
+  };
+  return metas[key] ?? { label: key || "待判断", type: "info" };
+}
+
+function isLowConfidenceIssue(key) {
+  return key === "grading_low_confidence" || key === "answer_low_confidence" || key === "evidence_low_confidence";
+}
+
+function addReviewReason(reasons, key, override = {}) {
+  if (reasons.some((item) => item.key === key)) return;
+  reasons.push({
+    key,
+    ...reviewReasonMeta(key),
+    ...override,
+  });
+}
+
+function reviewDimensionRowsForQuestion(questionItem) {
+  const rubrics = taskQuestions.value.find((question) => question.id === questionItem?.question_id)?.rubrics ?? [];
+  return rubrics.map((rubric) => {
+    const evidence = evidenceForRubric(questionItem, rubric.id);
+    const score = questionItem?.grading_result?.dimension_scores?.find((scoreItem) => scoreItem.rubric_id === rubric.id);
+    return {
+      rubric,
+      evidence,
+      score,
+      confidence: Number(evidence?.confidence ?? 0),
+      positive_evidence: evidence?.positive_evidence ?? [],
+      negative_evidence: evidence?.negative_evidence ?? [],
+    };
+  });
+}
+
+function buildQuestionReviewReasons(questionItem) {
+  if (!questionItem?.grading_result) return [];
+  const result = questionItem.grading_result;
+  const reasons = [];
+  const isMissingWithoutScore = isConfirmedMissingAnswer(questionItem) && Number(result.score ?? 0) <= 0;
+  if (isMissingWithoutScore || (result.grading_status === "missing" && Number(result.score ?? 0) <= 0)) return reasons;
+
+  if (result.review_required) addReviewReason(reasons, "review_required");
+  if (result.review_priority === "urgent" || result.review_priority === "high") {
+    addReviewReason(reasons, "high_priority", {
+      label: reviewPriorityMeta(result.review_priority).label,
+      type: result.review_priority === "urgent" ? "danger" : "warning",
+    });
+  }
+  if (!isConfirmedMissingAnswer(questionItem) && Number(result.confidence ?? 1) < 0.8) {
+    addReviewReason(reasons, "grading_low_confidence");
+  }
+  if (!isConfirmedMissingAnswer(questionItem) && Number(questionItem.answer_confidence ?? 1) < 0.8) {
+    addReviewReason(reasons, "answer_low_confidence");
+  }
+  if (!String(questionItem.answer_text ?? "").trim() && Number(result.score ?? 0) > 0) {
+    addReviewReason(reasons, "empty_answer_scored");
+  }
+  if (Number(result.score ?? 0) > questionMaxScore(questionItem.question_id)) {
+    addReviewReason(reasons, "score_exceeds_max");
+  }
+
+  const scoreTotal = (result.dimension_scores ?? []).reduce((sum, item) => sum + Number(item.score ?? 0), 0);
+  if (Math.abs(scoreTotal - Number(result.score ?? 0)) > 0.001) {
+    addReviewReason(reasons, "score_sum_mismatch");
+  }
+
+  reviewDimensionRowsForQuestion(questionItem).forEach((row) => {
+    const score = Number(row.score?.score ?? 0);
+    const maxScore = Number(row.rubric.max_score ?? row.score?.max_score ?? 0);
+    if (Number(row.confidence ?? 1) < 0.8) addReviewReason(reasons, "evidence_low_confidence");
+    if (score > maxScore) addReviewReason(reasons, "dimension_score_exceeds_max");
+    if (score >= maxScore && row.negative_evidence.length) {
+      addReviewReason(reasons, "negative_evidence_full_score");
+    }
+    if (score > maxScore * 0.8 && !row.positive_evidence.length) {
+      addReviewReason(reasons, "no_positive_evidence_high_score");
+    }
+  });
+
+  return reasons;
+}
+
+function questionHasReviewReasons(questionItem) {
+  return buildQuestionReviewReasons(questionItem).length > 0;
+}
+
+function questionNeedsTeacherReview(questionItem) {
+  return questionHasReviewReasons(questionItem) && !teacherReviewRevisionForResult(questionItem?.grading_result);
+}
+
+function teacherReviewRevisionKey(result) {
+  if (!result) return "";
+  return String(result.id ?? result.student_answer_id ?? "");
+}
+
+function teacherReviewRevisionForResult(result) {
+  const key = teacherReviewRevisionKey(result);
+  if (!key) return null;
+  return teacherRevisionMap.value[String(selectedTaskId.value)]?.[key] ?? null;
+}
+
+function teacherReviewFinalScore(questionItem) {
+  const revision = teacherReviewRevisionForResult(questionItem?.grading_result);
+  return revision?.final_score ?? questionItem?.grading_result?.final_score ?? questionItem?.grading_result?.score;
+}
+
+function teacherReviewStatusMeta(questionItem) {
+  const revision = teacherReviewRevisionForResult(questionItem?.grading_result);
+  if (revision?.review_status === "teacher_modified") return { label: "已修改", type: "warning" };
+  if (revision?.review_status === "teacher_confirmed") return { label: "已确认", type: "success" };
+  if (questionHasReviewReasons(questionItem)) return { label: "待复核", type: "warning" };
+  return { label: "待确认", type: "info" };
+}
+
+function teacherReviewReasons(questionItem) {
+  return buildQuestionReviewReasons(questionItem);
+}
+
+function studentTeacherFinalScore(student) {
+  const scoredQuestions = (student?.questions ?? []).filter((question) => question.grading_result);
+  if (!scoredQuestions.length) return "-";
+  const total = scoredQuestions.reduce((sum, question) => sum + Number(teacherReviewFinalScore(question) ?? 0), 0);
+  return formatScore(total);
+}
+
+function selectTeacherReviewStudent(submissionId) {
+  selectedTeacherReviewSubmissionId.value = submissionId;
+  selectedTeacherReviewQuestionId.value = filteredTeacherReviewQuestions.value[0]?.question_id ?? null;
+}
+
+function selectTeacherReviewQuestion(questionId) {
+  selectedTeacherReviewQuestionId.value = questionId;
+}
+
+function ensureTeacherReviewSelection() {
+  const firstStudent = teacherReviewStudents.value[0];
+  if (!firstStudent) {
+    selectedTeacherReviewSubmissionId.value = null;
+    selectedTeacherReviewQuestionId.value = null;
+    return;
+  }
+  if (!teacherReviewStudents.value.some((student) => student.submission_id === selectedTeacherReviewSubmissionId.value)) {
+    selectedTeacherReviewSubmissionId.value = firstStudent.submission_id;
+  }
+  const firstQuestion = filteredTeacherReviewQuestions.value[0] ?? selectedTeacherReviewQuestions.value[0];
+  if (!firstQuestion) {
+    selectedTeacherReviewQuestionId.value = null;
+    return;
+  }
+  if (!selectedTeacherReviewQuestions.value.some((question) => question.question_id === selectedTeacherReviewQuestionId.value)) {
+    selectedTeacherReviewQuestionId.value = firstQuestion.question_id;
+  }
+}
+
+function loadTeacherReviewDraft(questionItem) {
+  const revision = teacherReviewRevisionForResult(questionItem?.grading_result);
+  const aiScore = Number(questionItem?.grading_result?.score ?? 0);
+  Object.assign(teacherReviewDraft, {
+    final_score: Number(revision?.final_score ?? aiScore),
+    review_status: revision?.review_status ?? "teacher_confirmed",
+    teacher_comment: revision?.teacher_comment ?? questionItem?.grading_result?.ai_comment ?? "",
+    revision_reason: revision?.revision_reason ?? "",
+  });
+}
+
+function resetTeacherReviewDraft() {
+  loadTeacherReviewDraft({
+    ...selectedTeacherReviewQuestion.value,
+    grading_result: {
+      ...selectedTeacherReviewQuestion.value?.grading_result,
+      final_score: selectedTeacherReviewQuestion.value?.grading_result?.score,
+    },
+  });
+  teacherReviewDraft.final_score = Number(selectedTeacherReviewQuestion.value?.grading_result?.score ?? 0);
+  teacherReviewDraft.review_status = "teacher_confirmed";
+  teacherReviewDraft.revision_reason = "";
+}
+
+function inferTeacherReviewStatus(questionItem, draft) {
+  const aiScore = Number(questionItem?.grading_result?.score ?? 0);
+  const finalScore = Number(draft?.final_score ?? aiScore);
+  const hasRevisionReason = Boolean(draft?.revision_reason?.trim());
+  return finalScore !== aiScore || hasRevisionReason ? "teacher_modified" : "teacher_confirmed";
+}
+
+function saveTeacherReviewRevision(questionItem, draft) {
+  const result = questionItem?.grading_result;
+  const key = teacherReviewRevisionKey(result);
+  if (!selectedTaskId.value || !key) return;
+  const taskKey = String(selectedTaskId.value);
+  const nextTaskRevisions = {
+    ...(teacherRevisionMap.value[taskKey] ?? {}),
+    [key]: {
+      grading_result_id: result.id,
+      student_answer_id: result.student_answer_id,
+      student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
+      question_id: questionItem.question_id,
+      final_score: Number(draft.final_score ?? result.score ?? 0),
+      review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
+      teacher_comment: draft.teacher_comment?.trim() ?? "",
+      revision_reason: draft.revision_reason?.trim() ?? "",
+      updated_at: new Date().toISOString(),
+    },
+  };
+  teacherRevisionMap.value = {
+    ...teacherRevisionMap.value,
+    [taskKey]: nextTaskRevisions,
+  };
+  writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+}
+
+function saveTeacherReviewDraft() {
+  if (!selectedTeacherReviewQuestion.value) return;
+  const maxScore = questionMaxScore(selectedTeacherReviewQuestion.value.question_id);
+  if (Number(teacherReviewDraft.final_score ?? 0) > maxScore) {
+    ElMessage.warning("最终分不能超过题目满分");
+    return;
+  }
+  const aiScore = Number(selectedTeacherReviewQuestion.value.grading_result?.score ?? 0);
+  const reviewStatus = inferTeacherReviewStatus(selectedTeacherReviewQuestion.value, teacherReviewDraft);
+  saveTeacherReviewRevision(selectedTeacherReviewQuestion.value, {
+    ...teacherReviewDraft,
+    review_status: reviewStatus,
+  });
+  taskStore.updateTask(selectedTaskId.value, {
+    status: "teacher_reviewed",
+    current_stage: "teacher_review",
+    progress: taskProgressForStage("teacher_review"),
+  });
+  ElMessage.success("复核记录已保存");
+}
+
+function confirmStableTeacherReviewItems() {
+  const pendingItems = [...teacherReviewPendingStableItems.value];
+  pendingItems.forEach((questionItem) => {
+    saveTeacherReviewRevision(questionItem, {
+      final_score: Number(questionItem.grading_result?.score ?? 0),
+      review_status: "teacher_confirmed",
+      teacher_comment: questionItem.grading_result?.ai_comment ?? "",
+      revision_reason: "批量确认无异常项",
+    });
+  });
+  taskStore.updateTask(selectedTaskId.value, {
+    status: "teacher_reviewed",
+    current_stage: "teacher_review",
+    progress: taskProgressForStage("teacher_review"),
+  });
+  ElMessage.success(`已确认 ${pendingItems.length} 条稳定评分`);
 }
 
 function studentEvidenceCompleted(student) {
