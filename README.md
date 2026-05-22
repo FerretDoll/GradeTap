@@ -156,6 +156,43 @@ corepack pnpm run dev
 http://127.0.0.1:5173
 ```
 
+## DeepSeek API Key 获取与配置
+
+GradeTap 默认支持通过 DeepSeek Open Platform 调用大模型。官方 API 文档入口为 [DeepSeek API Docs](https://api-docs.deepseek.com/zh-cn/)，API 平台入口为 [DeepSeek Platform](https://platform.deepseek.com/)。
+
+获取 API Key 的流程：
+
+1. 打开 `https://platform.deepseek.com/`。
+2. 注册或登录 DeepSeek 账号。
+3. 进入 API Keys / API 密钥页面。
+4. 点击创建 API Key，按页面提示生成新密钥。
+5. 复制密钥并妥善保存。平台通常只在创建时完整展示一次，后续无法再次查看明文。
+6. 如平台要求，先完成充值或开通额度，再进行接口调用测试。
+
+在 GradeTap 中配置：
+
+1. 启动前后端服务。
+2. 打开前端教师工作台。
+3. 进入模型配置页面。
+4. 填写以下信息：
+
+```text
+Provider: deepseek
+Base URL: https://api.deepseek.com
+Model: deepseek-v4-pro
+API Key: 从 DeepSeek Platform 创建的密钥
+```
+
+5. 点击连通性测试，看到“密钥可用，模型连接正常”后再启用智能批改流程。
+
+安全注意事项：
+
+- 不要把 API Key 写入前端代码。
+- 不要把真实 API Key 提交到 Git。
+- 不要在截图、演示视频或日志中暴露 API Key。
+- 如果怀疑密钥泄露，应立即在 DeepSeek Platform 删除旧密钥并创建新密钥。
+- 生产环境建议通过后端配置、数据库加密字段或密钥管理服务保存密钥。
+
 ## 开发约定
 
 - API 层只处理请求响应和权限校验，业务逻辑放在 `services/`。
