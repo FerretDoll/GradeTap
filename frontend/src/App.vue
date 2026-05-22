@@ -17,7 +17,7 @@
           alt=""
           aria-hidden="true"
         />
-        <span class="brand-subtitle">证据驱动的教师批改工作台</span>
+        <span class="brand-subtitle">面向编码作业的智能批改助手</span>
       </div>
 
       <el-menu :default-active="activeMenu" :collapse="sidebarCollapsed" class="side-menu" @select="handleMenuSelect">
@@ -62,7 +62,9 @@
             </button>
             <span class="topbar-detail-path-arrow">›</span>
             <h1>{{ selectedTask?.task_name || "批改任务" }}</h1>
-            <el-tag class="status-tag" effect="light">{{ selectedTask?.status || "created" }}</el-tag>
+            <el-tag class="status-tag" :type="taskStatusMeta(selectedTask?.status).type" effect="light">
+              {{ taskStatusMeta(selectedTask?.status).label }}
+            </el-tag>
           </div>
           <p>{{ selectedTask?.course_name }} / {{ selectedTask?.class_name }}</p>
         </div>
@@ -185,7 +187,9 @@
                   <el-table-column prop="class_name" label="班级" width="140" align="center" />
                   <el-table-column prop="status" label="状态" width="150" align="center">
                     <template #default="{ row }">
-                      <el-tag class="status-tag" effect="light">{{ row.status }}</el-tag>
+                      <el-tag class="status-tag" :type="taskStatusMeta(row.status).type" effect="light">
+                        {{ taskStatusMeta(row.status).label }}
+                      </el-tag>
                     </template>
                   </el-table-column>
                   <el-table-column label="操作" width="120" fixed="right" align="center">
@@ -3175,12 +3179,50 @@ const llmHealthLabel = computed(() => {
   return labels[llmHealth.status] ?? llmHealth.message;
 });
 
-const metrics = [
-  { label: "待确认标准", value: "0" },
-  { label: "批改中", value: "0" },
-  { label: "需复核", value: "0" },
-  { label: "可导出", value: "0" },
-];
+const taskStatusMap = {
+  created: { label: "已创建", type: "info" },
+  files_uploaded: { label: "已上传文件", type: "primary" },
+  parsed: { label: "文件已解析", type: "primary" },
+  questions_analyzed: { label: "题目已分析", type: "primary" },
+  rubrics_generated: { label: "量规已生成", type: "warning" },
+  waiting_rubric_confirm: { label: "待确认量规", type: "warning" },
+  rubrics_confirmed: { label: "量规已确认", type: "success" },
+  students_prepared: { label: "学生已解析", type: "primary" },
+  answers_extracted: { label: "答案已抽取", type: "primary" },
+  evidence_extracted: { label: "证据已提取", type: "primary" },
+  grading: { label: "AI评分中", type: "warning" },
+  graded: { label: "AI评分完成", type: "success" },
+  reflecting: { label: "反思校准中", type: "warning" },
+  reflected: { label: "已校准", type: "success" },
+  review_routed: { label: "已分流复核", type: "warning" },
+  waiting_teacher_review: { label: "待教师复核", type: "warning" },
+  teacher_reviewed: { label: "教师已复核", type: "success" },
+  exported: { label: "已导出", type: "success" },
+  summary_generated: { label: "报告已生成", type: "success" },
+  failed: { label: "失败", type: "danger" },
+};
+
+const rubricConfirmStatuses = new Set(["questions_analyzed", "rubrics_generated", "waiting_rubric_confirm"]);
+const gradingActiveStatuses = new Set([
+  "files_uploaded",
+  "parsed",
+  "rubrics_confirmed",
+  "students_prepared",
+  "answers_extracted",
+  "evidence_extracted",
+  "grading",
+  "reflecting",
+]);
+const teacherReviewStatuses = new Set(["graded", "reflected", "review_routed", "waiting_teacher_review"]);
+const exportReadyStatuses = new Set(["teacher_reviewed", "exported", "summary_generated"]);
+
+const weeklyTasks = computed(() => taskStore.items.filter((task) => isTaskActiveThisWeek(task)));
+const metrics = computed(() => [
+  { label: "待确认标准", value: countTasksByStatus(weeklyTasks.value, rubricConfirmStatuses) },
+  { label: "批改中", value: countTasksByStatus(weeklyTasks.value, gradingActiveStatuses) },
+  { label: "需复核", value: countTasksByStatus(weeklyTasks.value, teacherReviewStatuses) },
+  { label: "可导出", value: countTasksByStatus(weeklyTasks.value, exportReadyStatuses) },
+]);
 
 const classSummary = computed(() => [
   { label: "班级总数", value: classes.value.length },
@@ -6071,6 +6113,35 @@ function questionMaxScore(questionId) {
 function formatScore(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 1);
+}
+
+function taskStatusMeta(status) {
+  return taskStatusMap[status] ?? { label: status || "已创建", type: "info" };
+}
+
+function countTasksByStatus(tasks, statusSet) {
+  return tasks.filter((task) => statusSet.has(task.status)).length;
+}
+
+function isTaskActiveThisWeek(task) {
+  const activeDate = parseTaskDate(task.updated_at) ?? parseTaskDate(task.created_at);
+  if (!activeDate) return true;
+  return activeDate >= startOfCurrentWeek();
+}
+
+function parseTaskDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function startOfCurrentWeek() {
+  const now = new Date();
+  const start = new Date(now);
+  const day = start.getDay() || 7;
+  start.setDate(start.getDate() - day + 1);
+  start.setHours(0, 0, 0, 0);
+  return start;
 }
 
 function gradingStatusMeta(status) {
