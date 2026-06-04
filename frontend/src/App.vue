@@ -1932,16 +1932,25 @@
                                 >
                                   {{ selectedAssignmentHasRubrics ? "重新生成评分量规" : "生成评分量规" }}
                                 </el-button>
-                                <el-button
-                                  v-else-if="activeAssignmentRubricStage.key === 'teacher_confirm_rubrics'"
-                                  size="small"
-                                  type="success"
-                                  :disabled="!selectedAssignmentHasRubrics"
-                                  :loading="assignmentRubricConfirmLoading"
-                                  @click="confirmSelectedAssignmentRubrics"
-                                >
-                                  确认并绑定
-                                </el-button>
+                                <template v-else-if="activeAssignmentRubricStage.key === 'teacher_confirm_rubrics'">
+                                  <el-button
+                                    size="small"
+                                    :icon="Download"
+                                    :disabled="!selectedAssignmentHasRubrics"
+                                    @click="exportSelectedAssignmentRubrics"
+                                  >
+                                    导出 Excel
+                                  </el-button>
+                                  <el-button
+                                    size="small"
+                                    type="success"
+                                    :disabled="!selectedAssignmentHasRubrics"
+                                    :loading="assignmentRubricConfirmLoading"
+                                    @click="confirmSelectedAssignmentRubrics"
+                                  >
+                                    确认并绑定
+                                  </el-button>
+                                </template>
                               </div>
                             </div>
                             <p>{{ activeAssignmentRubricStage.detail }}</p>
@@ -8000,6 +8009,112 @@ function safeDownloadFilename(name, fallback = "gradetap") {
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-");
   return normalized || fallback;
+}
+
+function escapeHtmlCell(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildAssignmentRubricExportRows() {
+  return selectedAssignmentQuestions.value.map((question) => {
+    const rubrics = question.rubrics?.length ? question.rubrics : [null];
+    return {
+      question_number: question.question_number ?? "",
+      question_content: question.content ?? "",
+      question_type: question.question_type ?? "",
+      knowledge_points: formatKnowledgePoints(question.knowledge_points),
+      difficulty: difficultyMeta(question.difficulty).label,
+      total_score: question.total_score ?? "",
+      rubrics: rubrics.map((rubric) => ({
+        dimension_name: rubric?.dimension_name ?? "",
+        dimension_score: rubric?.max_score ?? "",
+        scoring_criteria: rubric?.scoring_criteria ?? "",
+        deduction_criteria: rubric?.deduction_criteria ?? "",
+        evidence_requirement: rubric?.evidence_requirement ?? "",
+      })),
+    };
+  });
+}
+
+function exportSelectedAssignmentRubrics() {
+  const questionGroups = buildAssignmentRubricExportRows();
+  if (!questionGroups.some((group) =>
+    group.rubrics.some((rubric) => rubric.dimension_name || rubric.scoring_criteria || rubric.evidence_requirement),
+  )) {
+    ElMessage.warning("暂无可导出的评分量规");
+    return;
+  }
+
+  const headers = [
+    "题号",
+    "题干",
+    "题型",
+    "知识点",
+    "难度",
+    "题目总分",
+    "评分维度",
+    "维度分值",
+    "得分条件",
+    "扣分条件",
+    "证据要求",
+  ];
+  const mergedQuestionFields = [
+    "question_number",
+    "question_content",
+    "question_type",
+    "knowledge_points",
+    "difficulty",
+    "total_score",
+  ];
+  const rubricFields = [
+    "dimension_name",
+    "dimension_score",
+    "scoring_criteria",
+    "deduction_criteria",
+    "evidence_requirement",
+  ];
+  const tableRows = questionGroups.map((group) => {
+    const rowspan = Math.max(group.rubrics.length, 1);
+    return group.rubrics.map((rubric, rubricIndex) => {
+      const mergedCells = rubricIndex === 0
+        ? mergedQuestionFields
+          .map((field) => `<td rowspan="${rowspan}">${escapeHtmlCell(group[field])}</td>`)
+          .join("")
+        : "";
+      const rubricCells = rubricFields
+        .map((field) => `<td>${escapeHtmlCell(rubric[field])}</td>`)
+        .join("");
+      return `<tr>${mergedCells}${rubricCells}</tr>`;
+    }).join("");
+  }).join("");
+  const assignmentName = selectedCourseAssignment.value?.assignment_name || "评分量规";
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    table { border-collapse: collapse; font-family: "Microsoft YaHei", Arial, sans-serif; }
+    th, td { border: 1px solid #999; padding: 6px 8px; mso-number-format: "\\@"; vertical-align: top; }
+    th { background: #eef3f8; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <table>
+    <thead><tr>${headers.map((header) => `<th>${escapeHtmlCell(header)}</th>`).join("")}</tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`;
+  downloadTextFile(
+    `\ufeff${html}`,
+    `${safeDownloadFilename(assignmentName)}-评分量规.xls`,
+    "application/vnd.ms-excel;charset=utf-8",
+  );
+  ElMessage.success("评分量规 Excel 已生成");
 }
 
 function buildAutoGradeScriptRows() {
