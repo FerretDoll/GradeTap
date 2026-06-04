@@ -1764,6 +1764,200 @@ body {
   flex: 1;
 }
 
+.plagiarism-test-panel {
+  display: flex;
+  flex: 1.35;
+  flex-direction: column;
+  min-height: 280px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.plagiarism-test-heading,
+.plagiarism-test-actions,
+.plagiarism-student-score,
+.plagiarism-segment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plagiarism-test-heading {
+  margin-bottom: 12px;
+}
+
+.plagiarism-test-heading strong,
+.plagiarism-test-heading span,
+.plagiarism-student-card strong,
+.plagiarism-student-card span,
+.plagiarism-student-card small,
+.plagiarism-match-card strong,
+.plagiarism-match-card span {
+  display: block;
+}
+
+.plagiarism-test-heading span,
+.plagiarism-student-card span,
+.plagiarism-student-card small,
+.plagiarism-match-card span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.plagiarism-test-grid {
+  display: grid;
+  grid-template-columns: 230px 230px minmax(360px, 1fr);
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+}
+
+.plagiarism-student-list,
+.plagiarism-match-list,
+.plagiarism-segment-view {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.plagiarism-student-list,
+.plagiarism-segment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.plagiarism-match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.plagiarism-student-card,
+.plagiarism-match-card {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fcff;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.plagiarism-student-card:hover,
+.plagiarism-match-card:hover,
+.plagiarism-student-card.active,
+.plagiarism-match-card.active {
+  border-color: rgba(15, 143, 189, 0.72);
+  background: #e9f8fc;
+  transform: translateY(-1px);
+}
+
+.plagiarism-student-card.risk:not(.active),
+.plagiarism-match-card.risk:not(.active) {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: #fffaf0;
+}
+
+.plagiarism-student-score {
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.plagiarism-student-score strong {
+  display: inline-flex;
+  align-items: center;
+  color: var(--green);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.plagiarism-student-score .el-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.plagiarism-student-score .el-tag .el-tag__content {
+  line-height: 1.2;
+}
+
+.plagiarism-segment-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.plagiarism-segment-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fcff;
+}
+
+.plagiarism-segment-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.plagiarism-segment-columns > div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.plagiarism-segment-columns span,
+.plagiarism-segment-meta span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.plagiarism-question-content {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.plagiarism-segment-columns p {
+  margin: 6px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plagiarism-segment-columns mark {
+  padding: 1px 2px;
+  border-radius: 3px;
+  background: rgba(245, 158, 11, 0.28);
+  color: inherit;
+}
+
 .answer-extract-panel {
   --answer-panel-gap: 12px;
 
@@ -1939,6 +2133,13 @@ body {
   white-space: nowrap;
 }
 
+.answer-column-heading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
 .heading-student-name {
   display: inline-flex;
   align-items: center;
@@ -2049,22 +2250,18 @@ body {
   content: "";
 }
 
-.answer-card > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-}
-
 .answer-card strong {
   min-width: 0;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-.answer-card p {
-  margin: 8px 0 0;
-  color: var(--muted);
+.answer-card .evidence-question-card-head strong {
+  display: block;
+}
+
+.answer-card .question-answer-snippet p {
+  color: var(--ink);
   font-size: 13px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -2237,7 +2434,7 @@ body {
 }
 
 .evidence-student-counts span,
-.evidence-question-meta span {
+.evidence-question-meta > span {
   margin-top: 0;
   padding: 4px 6px;
   border-radius: 6px;
@@ -2245,6 +2442,42 @@ body {
   font-size: 12px;
   font-weight: 700;
   text-align: center;
+}
+
+.answer-question-meta {
+  align-items: stretch;
+}
+
+.answer-question-meta .answer-confirm-button.el-button,
+.answer-question-meta .answer-confirm-button.el-button > span {
+  background: #1677ff;
+  color: #fff;
+}
+
+.answer-question-meta .answer-confirm-button.el-button {
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.answer-question-meta .answer-confirm-button.el-button:hover,
+.answer-question-meta .answer-confirm-button.el-button:focus,
+.answer-question-meta .answer-confirm-button.el-button:hover > span,
+.answer-question-meta .answer-confirm-button.el-button:focus > span {
+  background: #4096ff;
+  color: #fff;
+}
+
+.answer-question-meta .answer-confirm-button.el-button.is-loading,
+.answer-question-meta .answer-confirm-button.el-button.is-loading > span {
+  background: #1677ff;
+  color: #fff;
 }
 
 .evidence-student-card .el-progress {
@@ -3312,6 +3545,8 @@ body {
   .form-grid,
   .stage-detail-grid,
   .answer-extract-grid,
+  .plagiarism-test-grid,
+  .plagiarism-segment-columns,
   .evidence-extract-grid,
   .teacher-review-grid,
   .reflection-grid,

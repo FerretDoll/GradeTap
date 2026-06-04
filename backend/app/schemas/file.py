@@ -22,3 +22,10 @@ class UploadedFileRead(UploadedFileBase):
     task_id: int
     created_at: datetime
     updated_at: datetime
+
+
+class TaskFileUploadResponse(BaseModel):
+    files: list[UploadedFileRead]
+    extracted_from_zip: bool = False
+    source_file_name: str = ""
+    message: str = ""

@@ -103,3 +103,11 @@ class AnswerExtractionStartResponse(BaseModel):
     total_questions: int
     total_students: int
     max_workers: int
+
+
+class AnswerExtractionStudentStartResponse(BaseModel):
+    task_id: int
+    submission_id: int
+    status: str = "queued"
+    stage: str = "extract_answers"
+    total_questions: int

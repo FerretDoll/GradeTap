@@ -260,6 +260,7 @@
                     :class="{
                       'progress-stage-detail--analysis': activeProgressStage.key === 'analyze_questions',
                       'progress-stage-detail--student-parse': activeProgressStage.key === 'prepare_students',
+                      'progress-stage-detail--plagiarism': activeProgressStage.key === 'plagiarism_check',
                       'progress-stage-detail--answer-extract': activeProgressStage.key === 'extract_answers',
                       'progress-stage-detail--evidence-extract': activeProgressStage.key === 'extract_evidence',
                       'progress-stage-detail--ai-grading': activeProgressStage.key === 'grade_by_question',
@@ -269,6 +270,10 @@
                       <div v-if="activeProgressStage.key === 'prepare_students'">
                         <span class="section-kicker">Match Summary</span>
                         <h3>{{ studentParseMatchedCount }}/{{ studentParseTotalCount }} 名学生已匹配</h3>
+                      </div>
+                      <div v-else-if="activeProgressStage.key === 'plagiarism_check'">
+                        <span class="section-kicker">Plagiarism Check</span>
+                        <h3>作业查重</h3>
                       </div>
                       <div v-else-if="activeProgressStage.key === 'extract_answers'">
                         <span class="section-kicker">Answer Extract</span>
@@ -298,6 +303,12 @@
                         <el-tag effect="plain">{{ activeProgressStageStatus }}</el-tag>
                         <el-tag v-if="activeProgressStage.key === 'prepare_students'" effect="plain">
                           {{ uploadedStudentSubmissionFileCount }} 个学生作业文件
+                        </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'plagiarism_check'" effect="plain">
+                          {{ plagiarismCheckedStudentCount }} 名学生
+                        </el-tag>
+                        <el-tag v-if="activeProgressStage.key === 'plagiarism_check'" effect="plain">
+                          {{ plagiarismRiskStudentCount }} 名有相似记录
                         </el-tag>
                         <el-tag v-if="activeProgressStage.key === 'extract_answers'" effect="plain">
                           {{ taskQuestions.length }} 道题
@@ -335,6 +346,17 @@
                             @click="runStudentPrepare"
                           >
                             {{ taskHasStoredStudentMatches ? "重新解析学生" : "开始学生解析" }}
+                          </el-button>
+                        </template>
+                        <template v-else-if="activeProgressStage.key === 'plagiarism_check'">
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :disabled="!answerExtractionHasAnswers"
+                            :loading="plagiarismCheckLoading"
+                            @click="runPlagiarismCheck"
+                          >
+                            {{ taskPlagiarism.check ? "重新运行作业查重" : "开始作业查重" }}
                           </el-button>
                         </template>
                         <template v-else-if="activeProgressStage.key === 'extract_answers'">
@@ -416,6 +438,8 @@
                           <el-button
                             size="small"
                             type="success"
+                            :disabled="!teacherReviewPendingStableItems.length || confirmingStableTeacherReview"
+                            :loading="confirmingStableTeacherReview"
                             @click="confirmStableTeacherReviewItems"
                           >
                             批量确认稳定项
@@ -431,6 +455,14 @@
                             @click="runResultExport"
                           >
                             导出 Excel
+                          </el-button>
+                          <el-button
+                            size="small"
+                            :icon="Download"
+                            :disabled="!exportPreviewRows.length"
+                            @click="runAutoGradeScriptExport"
+                          >
+                            导出 JS 脚本
                           </el-button>
                         </template>
                       </div>
@@ -521,6 +553,145 @@
                         :image-size="72"
                       />
                     </div>
+                    <div v-else-if="activeProgressStage.key === 'plagiarism_check'" class="plagiarism-test-panel">
+                        <div class="plagiarism-test-heading">
+                          <div>
+                            <strong>作业查重</strong>
+                            <span>
+                              按题比较学生答案相似度，再按题目分值加权汇总；当前不影响评分、复核和导出。
+                            </span>
+                          </div>
+                          <div class="plagiarism-test-actions">
+                            <el-tag effect="plain">
+                              {{ taskPlagiarism.check ? plagiarismCheckStatusMeta(taskPlagiarism.check.status).label : "未运行" }}
+                            </el-tag>
+                            <el-tag effect="plain">{{ plagiarismCheckedStudentCount }} 名学生</el-tag>
+                            <el-tag effect="plain">{{ plagiarismRiskStudentCount }} 名有相似记录</el-tag>
+                          </div>
+                        </div>
+                        <div v-if="plagiarismStudents.length" class="plagiarism-test-grid">
+                          <div class="plagiarism-student-list">
+                            <button
+                              v-for="student in plagiarismStudents"
+                              :key="student.student_submission_id"
+                              type="button"
+                              class="plagiarism-student-card"
+                              :class="{
+                                active: student.student_submission_id === selectedPlagiarismSubmissionId,
+                                risk: student.risk_level !== 'none',
+                              }"
+                              @click="selectPlagiarismStudent(student.student_submission_id)"
+                            >
+                              <div>
+                                <strong>{{ student.student_name }}</strong>
+                                <span>{{ student.student_no || "未填写学号" }}</span>
+                              </div>
+                              <div class="plagiarism-student-score">
+                                <strong>{{ formatPercent(student.max_similarity_score) }}</strong>
+                                <el-tag :type="plagiarismRiskMeta(student.risk_level).type" effect="light">
+                                  {{ plagiarismRiskMeta(student.risk_level).label }}
+                                </el-tag>
+                              </div>
+                              <small>{{ student.similar_students_count }} 名相似学生</small>
+                            </button>
+                          </div>
+                          <div ref="plagiarismMatchListRef" class="plagiarism-match-list">
+                            <div class="answer-column-heading">
+                              <strong>
+                                相似作业
+                                <span v-if="selectedPlagiarismStudent?.student_name" class="heading-student-name">
+                                  {{ selectedPlagiarismStudent.student_name }}
+                                </span>
+                              </strong>
+                              <el-tag effect="plain">{{ selectedPlagiarismMatches.length }} 条</el-tag>
+                            </div>
+                            <button
+                              v-for="match in selectedPlagiarismMatches"
+                              :key="match.match_id"
+                              type="button"
+                              class="plagiarism-match-card"
+                              :class="{
+                                active: match.match_id === selectedPlagiarismMatchId,
+                                risk: match.risk_level !== 'none',
+                              }"
+                              @click="selectPlagiarismMatch(match.match_id)"
+                            >
+                              <div>
+                                <strong>{{ match.student_name }}</strong>
+                                <span>{{ match.student_no || "未填写学号" }}</span>
+                              </div>
+                              <div class="plagiarism-student-score">
+                                <strong>{{ formatPercent(match.similarity_score) }}</strong>
+                                <el-tag :type="plagiarismRiskMeta(match.risk_level).type" effect="light">
+                                  {{ plagiarismRiskMeta(match.risk_level).label }}
+                                </el-tag>
+                              </div>
+                            </button>
+                            <el-empty
+                              v-if="selectedPlagiarismStudent && !selectedPlagiarismMatches.length"
+                              description="未发现明显相似作业"
+                              :image-size="64"
+                            />
+                          </div>
+                          <div class="plagiarism-segment-view">
+                            <div class="answer-column-heading">
+                              <strong>按题答案对比</strong>
+                              <el-tag effect="plain">{{ selectedPlagiarismQuestionGroups.length }} 题</el-tag>
+                            </div>
+                            <div v-if="selectedPlagiarismMatch" class="plagiarism-segment-list">
+                              <article
+                                v-for="group in selectedPlagiarismQuestionGroups"
+                                :key="group.key"
+                                class="plagiarism-segment-card"
+                              >
+                                <div class="plagiarism-segment-meta">
+                                  <strong>
+                                    {{ group.question_number ? `${group.question_number} 题` : "未标记题号" }}
+                                  </strong>
+                                  <span>
+                                    题目相似度 {{ formatPercent(group.question_similarity) }} / 相似片段 {{ group.segments.length }} 段
+                                  </span>
+                                </div>
+                                <p v-if="group.question_content" class="plagiarism-question-content">
+                                  {{ group.question_content }}
+                                </p>
+                                <div class="plagiarism-segment-columns">
+                                  <div>
+                                    <span>{{ selectedPlagiarismStudent?.student_name || "当前学生" }}</span>
+                                    <p>
+                                      <template
+                                        v-for="part in plagiarismHighlightedParts(group.student_answer_text, group.student_ranges)"
+                                        :key="part.key"
+                                      >
+                                        <mark v-if="part.highlight">{{ part.text }}</mark>
+                                        <template v-else>{{ part.text }}</template>
+                                      </template>
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <span>{{ selectedPlagiarismMatch.student_name }}</span>
+                                    <p>
+                                      <template
+                                        v-for="part in plagiarismHighlightedParts(group.matched_student_answer_text, group.matched_ranges)"
+                                        :key="part.key"
+                                      >
+                                        <mark v-if="part.highlight">{{ part.text }}</mark>
+                                        <template v-else>{{ part.text }}</template>
+                                      </template>
+                                    </p>
+                                  </div>
+                                </div>
+                              </article>
+                            </div>
+                            <el-empty v-else description="请选择相似作业查看按题答案对比" :image-size="64" />
+                          </div>
+                        </div>
+                        <el-empty
+                          v-else
+                          description="完成答案抽取后，可运行作业查重"
+                          :image-size="72"
+                        />
+                    </div>
                     <div v-else-if="activeProgressStage.key === 'extract_answers'" class="answer-extract-panel">
                       <div v-if="answerExtractionEligibleCount" class="answer-extract-grid">
                         <div class="answer-student-list">
@@ -556,6 +727,7 @@
                           </button>
                         </div>
                         <div
+                          ref="answerListViewRef"
                           class="answer-list-view"
                           @mouseenter="setAnswerInteractionArea('question-list')"
                           @mouseleave="clearAnswerInteractionArea('question-list')"
@@ -565,7 +737,19 @@
                               题目
                               <span v-if="selectedAnswerStudent?.student_name" class="heading-student-name">{{ selectedAnswerStudent.student_name }}</span>
                             </strong>
-                            <el-tag effect="plain">{{ selectedAnswerStudentAnswers.length }} 题</el-tag>
+                            <div class="answer-column-heading-actions">
+                              <el-tag effect="plain">{{ selectedAnswerStudentAnswers.length }} 题</el-tag>
+                              <el-button
+                                v-if="selectedAnswerStudent"
+                                :icon="Refresh"
+                                circle
+                                text
+                                title="重新抽取该学生"
+                                :loading="reExtractingAnswerSubmissionId === selectedAnswerStudent.submission_id"
+                                :disabled="answerExtractionLoading || !selectedAnswerStudent"
+                                @click.stop="runSingleStudentAnswerExtraction(selectedAnswerStudent)"
+                              />
+                            </div>
                           </div>
                           <div ref="answerQuestionListRef" class="answer-card-list">
                             <article
@@ -582,8 +766,32 @@
                               @mouseenter="hoveredAnswerQuestionId = question.id"
                               @mouseleave="hoveredAnswerQuestionId = null"
                             >
-                              <div>
+                              <div class="evidence-question-card-head">
                                 <strong>{{ question.question_number }}. {{ question.content }}</strong>
+                                <el-tag
+                                  v-if="answerQuestionFinalized(question.id)"
+                                  class="status-tag--compact"
+                                  :type="answerStatusMeta(answerForQuestion(question.id)?.extraction_status).type"
+                                  effect="light"
+                                >
+                                  {{ answerStatusMeta(answerForQuestion(question.id)?.extraction_status).label }}
+                                </el-tag>
+                              </div>
+                              <section class="question-answer-snippet">
+                                <span>学生答案</span>
+                                <p>{{ answerForQuestion(question.id)?.answer_text || "未抽取到学生答案。" }}</p>
+                              </section>
+                              <div v-if="answerQuestionFinalized(question.id)" class="evidence-question-meta answer-question-meta">
+                                <span>置信度 {{ formatPercent(answerForQuestion(question.id)?.confidence) }}</span>
+                                <el-button
+                                  v-if="answerNeedsExtractionConfirm(question.id)"
+                                  class="answer-confirm-button"
+                                  size="small"
+                                  :loading="confirmingAnswerId === answerForQuestion(question.id)?.id"
+                                  @click.stop="confirmAnswerExtraction(question.id)"
+                                >
+                                  确认
+                                </el-button>
                               </div>
                             </article>
                           </div>
@@ -596,7 +804,7 @@
                         >
                           <div class="answer-column-heading">
                             <strong>{{ selectedAnswerStudent?.source_file_name || "学生作业原文" }}</strong>
-                            <el-tag effect="plain">{{ selectedAnswerStudent?.content?.length ?? 0 }} 字</el-tag>
+                            <el-tag effect="plain">{{ resolveAnswerHighlightContent(selectedAnswerStudent).length }} 字</el-tag>
                           </div>
                           <div class="answer-source-text">
                             <template v-for="part in highlightedSubmissionParts" :key="part.key">
@@ -650,10 +858,16 @@
                                 <span>{{ student.student_no || "未填写学号" }}</span>
                               </div>
                               <el-tag
-                                :type="studentEvidenceLowConfidenceCount(student) ? 'warning' : 'success'"
+                                :type="!evidenceExtractionStarted ? 'info' : studentEvidenceLowConfidenceCount(student) ? 'warning' : 'success'"
                                 effect="light"
                               >
-                                {{ studentEvidenceLowConfidenceCount(student) ? "需复核" : "稳定" }}
+                                {{
+                                  !evidenceExtractionStarted
+                                    ? "待提取"
+                                    : studentEvidenceLowConfidenceCount(student)
+                                      ? "需复核"
+                                      : "稳定"
+                                }}
                               </el-tag>
                             </div>
                             <div class="evidence-student-counts">
@@ -664,19 +878,31 @@
                               :percentage="studentEvidenceProgress(student)"
                               :stroke-width="6"
                               :show-text="false"
-                              :class="{ 'progress-bar--running': student.status === 'processing' }"
+                              :class="{ 'progress-bar--running': studentEvidenceRunning(student) }"
                             />
                             <small>{{ studentEvidenceCompletedQuestionCount(student) }}/{{ taskQuestions.length }} 题</small>
                           </button>
                         </div>
 
-                        <div class="evidence-question-view">
+                        <div ref="evidenceQuestionViewRef" class="evidence-question-view">
                           <div class="answer-column-heading">
                             <strong>
                               题目
                               <span v-if="selectedEvidenceStudent?.student_name" class="heading-student-name">{{ selectedEvidenceStudent.student_name }}</span>
                             </strong>
-                            <el-tag effect="plain">{{ filteredEvidenceQuestions.length }} 题</el-tag>
+                            <div class="answer-column-heading-actions">
+                              <el-tag effect="plain">{{ filteredEvidenceQuestions.length }} 题</el-tag>
+                              <el-button
+                                v-if="selectedEvidenceStudent"
+                                :icon="Refresh"
+                                circle
+                                text
+                                title="重新提取该学生证据"
+                                :loading="reExtractingEvidenceSubmissionId === selectedEvidenceStudent.submission_id"
+                                :disabled="evidenceExtractionLoading || !selectedEvidenceStudent"
+                                @click.stop="runSingleStudentEvidenceExtraction(selectedEvidenceStudent)"
+                              />
+                            </div>
                           </div>
                           <div class="evidence-question-list">
                             <article
@@ -723,9 +949,9 @@
                               :key="row.rubric.id"
                               class="evidence-dimension-card"
                               :class="{
-                                warning: row.confidence < 0.8,
+                                warning: row.confidence < 0.8 && !row.pending,
                                 skipped: row.skipped,
-                                empty: !row.hasEvidence && !row.skipped,
+                                empty: !row.hasEvidence && !row.skipped && !row.pending,
                               }"
                             >
                               <div class="evidence-dimension-head">
@@ -733,8 +959,8 @@
                                   <strong>{{ row.rubric.dimension_name }}</strong>
                                   <span>{{ row.rubric.max_score }} 分 · {{ row.rubric.evidence_requirement }}</span>
                                 </div>
-                                <el-tag :type="evidenceConfidenceMeta(row.confidence, row.skipped).type" effect="light">
-                                  {{ evidenceConfidenceMeta(row.confidence, row.skipped).label }}
+                                <el-tag :type="evidenceConfidenceMeta(row.confidence, row.skipped, row.pending).type" effect="light">
+                                  {{ evidenceConfidenceMeta(row.confidence, row.skipped, row.pending).label }}
                                 </el-tag>
                               </div>
                               <div class="evidence-pill-grid">
@@ -743,6 +969,7 @@
                                   <ul v-if="row.positive_evidence.length">
                                     <li v-for="item in row.positive_evidence" :key="item">{{ item }}</li>
                                   </ul>
+                                  <p v-else-if="row.pending">待提取</p>
                                   <p v-else-if="row.skipped">缺答，无需提取</p>
                                   <p v-else>暂无正向证据</p>
                                 </div>
@@ -751,6 +978,7 @@
                                   <ul v-if="row.negative_evidence.length">
                                     <li v-for="item in row.negative_evidence" :key="item">{{ item }}</li>
                                   </ul>
+                                  <p v-else-if="row.pending">待提取</p>
                                   <p v-else-if="row.skipped">缺答，无需提取</p>
                                   <p v-else>暂无负向证据</p>
                                 </div>
@@ -811,16 +1039,29 @@
                               :show-text="false"
                               :class="{ 'progress-bar--running': studentAiGradingRunning(student) }"
                             />
+                            <small>{{ studentAiGradingCompletedQuestionCount(student) }}/{{ taskQuestions.length }} 题</small>
                           </button>
                         </div>
 
-                        <div class="ai-grading-result-view">
+                        <div ref="aiGradingResultViewRef" class="ai-grading-result-view">
                           <div class="answer-column-heading">
                             <strong>
                               题目
                               <span v-if="selectedAiGradingStudent?.student_name" class="heading-student-name">{{ selectedAiGradingStudent.student_name }}</span>
                             </strong>
-                            <el-tag effect="plain">{{ selectedAiGradingQuestions.length }} 题</el-tag>
+                            <div class="answer-column-heading-actions">
+                              <el-tag effect="plain">{{ selectedAiGradingQuestions.length }} 题</el-tag>
+                              <el-button
+                                v-if="selectedAiGradingStudent"
+                                :icon="Refresh"
+                                circle
+                                text
+                                title="重新评分该学生"
+                                :loading="reGradingSubmissionId === selectedAiGradingStudent.submission_id"
+                                :disabled="aiGradingLoading || !selectedAiGradingStudent"
+                                @click.stop="runSingleStudentAiGrading(selectedAiGradingStudent)"
+                              />
+                            </div>
                           </div>
                           <div class="ai-grading-question-list">
                             <article
@@ -862,7 +1103,7 @@
                           </div>
                         </div>
 
-                        <div class="ai-grading-evidence-view">
+                        <div ref="aiGradingEvidenceViewRef" class="ai-grading-evidence-view">
                           <div class="answer-column-heading">
                             <strong>{{ selectedAiGradingQuestionTitle }}</strong>
                             <el-tag effect="plain">评分依据</el-tag>
@@ -1134,7 +1375,7 @@
                             </strong>
                             <el-tag effect="plain">{{ filteredTeacherReviewQuestions.length }}/{{ selectedTeacherReviewQuestions.length }} 题</el-tag>
                           </div>
-                          <div class="teacher-review-question-card-list">
+                          <div ref="teacherReviewQuestionListRef" class="teacher-review-question-card-list">
                             <article
                               v-for="questionItem in filteredTeacherReviewQuestions"
                               :key="questionItem.question_id"
@@ -1177,7 +1418,7 @@
                           </div>
                         </section>
 
-                        <section class="teacher-review-detail">
+                        <section ref="teacherReviewDetailRef" class="teacher-review-detail">
                           <div class="answer-column-heading">
                             <strong>{{ selectedTeacherReviewQuestionTitle }}</strong>
                             <el-tag effect="plain">复核详情</el-tag>
@@ -1323,21 +1564,6 @@
                     </div>
                     <div v-else-if="activeProgressStage.key === 'export_results'" class="export-results-panel">
                       <div v-if="teacherReviewStudents.length" class="export-results-grid">
-                        <section class="export-summary-box">
-                          <div>
-                            <span class="section-kicker">Excel Export</span>
-                            <h3>成绩总表与按题明细</h3>
-                            <p>总分优先使用教师最终分；教师评语会按题整合为学生总评语。</p>
-                          </div>
-                          <el-button
-                            type="primary"
-                            :icon="Download"
-                            :loading="exportResultsLoading"
-                            @click="runResultExport"
-                          >
-                            导出 Excel
-                          </el-button>
-                        </section>
                         <el-table
                           :data="exportPreviewRows"
                           size="small"
@@ -2453,20 +2679,27 @@ import {
   uploadCourseAssignmentFile,
 } from "./api/courses";
 import {
+  confirmTaskStudentAnswer,
   deleteTask as deleteTaskApi,
   deleteTaskFile,
   exportTaskResults,
-  getTaskGradingResults,
-  getTaskTeacherRevisions,
   gradeTaskQuestion,
+  getTaskGradingResults,
+  getTaskPlagiarismStudentDetail,
+  getTaskPlagiarismStudents,
+  getTaskTeacherRevisions,
+  startTaskAiGradingForSubmission,
   getTaskAnswerExtraction,
   getTaskEvidenceExtraction,
   listTaskQuestions,
   listTaskFiles,
   prepareTaskStudents,
   reviewTaskGradingResult,
+  runTaskPlagiarismCheck,
   startTaskAnswerExtraction,
+  startTaskAnswerExtractionForSubmission,
   startTaskEvidenceExtraction,
+  startTaskEvidenceExtractionForSubmission,
   uploadTaskFile,
 } from "./api/tasks";
 import {
@@ -2475,6 +2708,7 @@ import {
   testLlmSettings,
   updateLlmSettings,
 } from "./api/settings";
+import { buildHighlightedSubmissionParts } from "./utils/answerHighlight";
 
 const taskStore = useTaskStore();
 const activeView = ref("tasks");
@@ -2504,7 +2738,14 @@ const studentDialogVisible = ref(false);
 const parsedPreviewVisible = ref(false);
 const parsedPreviewFile = ref(null);
 const answerQuestionListRef = ref(null);
+const answerListViewRef = ref(null);
 const answerSourceViewRef = ref(null);
+const evidenceQuestionViewRef = ref(null);
+const aiGradingResultViewRef = ref(null);
+const aiGradingEvidenceViewRef = ref(null);
+const teacherReviewQuestionListRef = ref(null);
+const teacherReviewDetailRef = ref(null);
+const plagiarismMatchListRef = ref(null);
 const submitting = ref(false);
 const assignmentLoading = ref(false);
 const taskAssignmentLoading = ref(false);
@@ -2517,9 +2758,14 @@ const taskFileDeletingId = ref(null);
 const assignmentFileDeletingId = ref(null);
 const parseFilesLoading = ref(false);
 const studentPrepareLoading = ref(false);
+const plagiarismCheckLoading = ref(false);
 const answerExtractionLoading = ref(false);
+const reExtractingAnswerSubmissionId = ref(null);
+const confirmingAnswerId = ref(null);
 const evidenceExtractionLoading = ref(false);
+const reExtractingEvidenceSubmissionId = ref(null);
 const aiGradingLoading = ref(false);
+const reGradingSubmissionId = ref(null);
 const reflectionLoading = ref(false);
 const parseAssignmentFilesLoading = ref(false);
 const questionAnalysisLoading = ref(false);
@@ -2590,6 +2836,10 @@ const classes = ref([]);
 const classStudents = ref([]);
 const taskClassStudents = ref([]);
 const taskQuestions = ref([]);
+const taskPlagiarism = ref({
+  check: null,
+  students: [],
+});
 const taskAnswerExtraction = ref(null);
 const taskEvidenceExtraction = ref(null);
 const taskAiGrading = ref({
@@ -2598,6 +2848,8 @@ const taskAiGrading = ref({
   results: [],
 });
 const selectedAnswerSubmissionId = ref(null);
+const selectedPlagiarismSubmissionId = ref(null);
+const selectedPlagiarismMatchId = ref(null);
 const hoveredAnswerQuestionId = ref(null);
 const answerInteractionArea = ref(null);
 const selectedEvidenceSubmissionId = ref(null);
@@ -2615,6 +2867,7 @@ const selectedTeacherReviewSubmissionId = ref(null);
 const selectedTeacherReviewQuestionId = ref(null);
 const teacherReviewFilter = ref("all");
 const exportResultsLoading = ref(false);
+const confirmingStableTeacherReview = ref(false);
 const teacherReviewDraft = reactive({
   final_score: 0,
   review_status: "teacher_confirmed",
@@ -2700,6 +2953,79 @@ const studentParseMatchedCount = computed(
   () => selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched").length,
 );
 const studentParseTotalCount = computed(() => taskClassStudents.value.length);
+const plagiarismStudents = computed(() => taskPlagiarism.value?.students ?? []);
+const selectedPlagiarismStudent = computed(() =>
+  plagiarismStudents.value.find((student) => student.student_submission_id === selectedPlagiarismSubmissionId.value)
+  ?? plagiarismStudents.value[0],
+);
+const selectedPlagiarismMatches = computed(() => selectedPlagiarismStudent.value?.matches ?? []);
+const selectedPlagiarismMatch = computed(() =>
+  selectedPlagiarismMatches.value.find((match) => match.match_id === selectedPlagiarismMatchId.value)
+  ?? selectedPlagiarismMatches.value[0],
+);
+const selectedPlagiarismQuestionGroups = computed(() => {
+  const currentSubmissionId = selectedPlagiarismStudent.value?.student_submission_id;
+  const matchedSubmissionId = selectedPlagiarismMatch.value?.student_submission_id;
+  if (!selectedPlagiarismMatch.value || !currentSubmissionId || !matchedSubmissionId) return [];
+
+  const segmentGroups = new Map();
+  (selectedPlagiarismMatch.value?.matched_segments ?? []).forEach((segment) => {
+    const key = segment.question_id ? `question:${segment.question_id}` : `segment:${segment.segment_id}`;
+    const group = segmentGroups.get(key) ?? {
+      key,
+      question_id: segment.question_id,
+      question_number: segment.question_number,
+      question_content: segment.question_content,
+      question_similarity: segment.question_similarity,
+      student_answer_text: segment.student_answer_text || segment.student_text || "",
+      matched_student_answer_text: segment.matched_student_answer_text || segment.matched_student_text || "",
+      student_ranges: [],
+      matched_ranges: [],
+      segments: [],
+    };
+    group.question_similarity = Math.max(
+      Number(group.question_similarity ?? 0),
+      Number(segment.question_similarity ?? 0),
+    );
+    group.segments.push(segment);
+    group.student_ranges.push({ start: segment.student_start, end: segment.student_end });
+    group.matched_ranges.push({
+      start: segment.matched_student_start,
+      end: segment.matched_student_end,
+    });
+    segmentGroups.set(key, group);
+  });
+
+  if (!taskQuestions.value.length) {
+    return Array.from(segmentGroups.values());
+  }
+
+  return taskQuestions.value.map((question, index) => {
+    const key = `question:${question.id}`;
+    const segmentGroup = segmentGroups.get(key);
+    return {
+      key,
+      question_id: question.id,
+      question_number: question.question_number,
+      question_content: question.content,
+      sort_order: question.sort_order ?? index,
+      question_similarity: segmentGroup?.question_similarity ?? 0,
+      student_answer_text:
+        segmentGroup?.student_answer_text
+        || plagiarismAnswerText(currentSubmissionId, question.id),
+      matched_student_answer_text:
+        segmentGroup?.matched_student_answer_text
+        || plagiarismAnswerText(matchedSubmissionId, question.id),
+      student_ranges: segmentGroup?.student_ranges ?? [],
+      matched_ranges: segmentGroup?.matched_ranges ?? [],
+      segments: segmentGroup?.segments ?? [],
+    };
+  });
+});
+const plagiarismCheckedStudentCount = computed(() => plagiarismStudents.value.length);
+const plagiarismRiskStudentCount = computed(() =>
+  plagiarismStudents.value.filter((student) => student.risk_level !== "none").length,
+);
 const answerExtractionStudents = computed(() => {
   const currentFileIds = new Set(
     (selectedTaskFileGroup.value.student_submission ?? []).map((file) => String(file.id)),
@@ -2735,12 +3061,16 @@ const selectedAnswerStudent = computed(() => {
   );
 });
 const selectedAnswerStudentAnswers = computed(() => selectedAnswerStudent.value?.answers ?? []);
-const highlightedSubmissionParts = computed(() =>
-  buildHighlightedSubmissionParts(
-    selectedAnswerStudent.value,
+const highlightedSubmissionParts = computed(() => {
+  const student = selectedAnswerStudent.value;
+  if (!student) return [{ key: "empty", text: "暂无学生作业原文", questionId: null }];
+
+  const content = resolveAnswerHighlightContent(student);
+  return buildHighlightedSubmissionParts(
+    { ...student, content },
     selectedAnswerStudentAnswers.value,
-  ),
-);
+  );
+});
 const activeAnswerQuestionId = computed(() => hoveredAnswerQuestionId.value);
 const evidenceExtractionStudents = computed(() => {
   const snapshotStudents = taskEvidenceExtraction.value?.students ?? [];
@@ -2750,21 +3080,49 @@ const evidenceExtractionStudents = computed(() => {
   return buildPreviewEvidenceExtractionStudents();
 });
 const evidenceExtractionEligibleCount = computed(() => evidenceExtractionStudents.value.length);
-const evidenceExtractionCompletedCount = computed(
-  () => evidenceExtractionStudents.value.filter((student) => studentEvidenceCompleted(student)).length,
-);
-const evidenceExtractionRemainingAnswerCount = computed(() =>
-  evidenceExtractionStudents.value.reduce(
-    (sum, student) =>
-      sum + (student.questions ?? []).filter((question) => !evidenceQuestionComplete(question)).length,
-    0,
-  ),
-);
 const evidenceExtractionHasEvidence = computed(() =>
   evidenceExtractionStudents.value.some((student) =>
     (student.questions ?? []).some((question) => (question.evidence_items ?? []).length > 0),
   ),
 );
+const evidenceExtractionStarted = computed(() => {
+  if (evidenceExtractionLoading.value) return true;
+  if (reExtractingEvidenceSubmissionId.value) return true;
+  if (activeEvidenceSubmissionIds.value.size > 0) return true;
+  if (taskEvidenceExtraction.value?.evidence_extraction_started) return true;
+  if (taskEvidenceExtraction.value?.status === "processing") return true;
+  if (evidenceExtractionHasEvidence.value) return true;
+  const taskStatus = selectedTask.value?.status ?? "";
+  return [
+    "evidence_extracted",
+    "grading",
+    "graded",
+    "reflecting",
+    "reflected",
+    "review_routed",
+    "waiting_teacher_review",
+    "teacher_reviewed",
+    "exported",
+    "summary_generated",
+  ].includes(taskStatus);
+});
+const evidenceExtractionCompletedCount = computed(() => {
+  if (!evidenceExtractionStarted.value) return 0;
+  return evidenceExtractionStudents.value.filter((student) => studentEvidenceCompleted(student)).length;
+});
+const evidenceExtractionRemainingAnswerCount = computed(() => {
+  if (!evidenceExtractionStarted.value) {
+    return evidenceExtractionStudents.value.reduce(
+      (sum, student) => sum + (student.questions ?? []).length,
+      0,
+    );
+  }
+  return evidenceExtractionStudents.value.reduce(
+    (sum, student) =>
+      sum + (student.questions ?? []).filter((question) => !evidenceQuestionComplete(question)).length,
+    0,
+  );
+});
 const evidenceLowConfidenceCount = computed(() =>
   evidenceExtractionStudents.value.reduce(
     (sum, student) => sum + studentEvidenceLowConfidenceCount(student),
@@ -2801,7 +3159,9 @@ const selectedEvidenceDimensionRows = computed(() =>
     const evidence = evidenceForRubric(selectedEvidenceQuestion.value, rubric.id);
     const positiveEvidence = evidence?.positive_evidence ?? [];
     const negativeEvidence = evidence?.negative_evidence ?? [];
-    const skipped = evidenceQuestionSkipsExtraction(selectedEvidenceQuestion.value);
+    const missingAnswer = evidenceQuestionSkipsExtraction(selectedEvidenceQuestion.value);
+    const skipped = evidenceExtractionStarted.value && missingAnswer;
+    const pending = !evidenceExtractionStarted.value;
     return {
       rubric,
       positive_evidence: positiveEvidence,
@@ -2809,6 +3169,8 @@ const selectedEvidenceDimensionRows = computed(() =>
       confidence: Number(evidence?.confidence ?? 0),
       hasEvidence: positiveEvidence.length > 0 || negativeEvidence.length > 0,
       skipped,
+      pending,
+      missingAnswer,
     };
   }),
 );
@@ -2817,7 +3179,7 @@ const aiGradingStudents = computed(() =>
   evidenceExtractionStudents.value.map((student) => {
     const questions = (student.questions ?? []).map((question) => ({
       ...question,
-      grading_result: gradingResultForAnswer(question.student_answer_id),
+      grading_result: visibleGradingResultForAnswer(question.student_answer_id),
     }));
     return {
       ...student,
@@ -2835,14 +3197,38 @@ const aiGradingAiEligibleAnswerCount = computed(() =>
     0,
   ),
 );
-const aiGradingCompletedAnswerCount = computed(() =>
-  aiGradingStudents.value.reduce(
+const aiGradingStarted = computed(() => {
+  if (aiGradingLoading.value) return true;
+  if (reGradingSubmissionId.value) return true;
+  if (activeAiGradingSubmissionIds.value.size > 0) return true;
+  const taskStatus = selectedTask.value?.status ?? "";
+  if ([
+    "grading",
+    "graded",
+    "reflecting",
+    "reflected",
+    "review_routed",
+    "waiting_teacher_review",
+    "teacher_reviewed",
+    "exported",
+    "summary_generated",
+  ].includes(taskStatus)) {
+    return true;
+  }
+  return aiGradingResults.value.some((result) => !isSystemMissingGradingResult(result));
+});
+const aiGradingCompletedAnswerCount = computed(() => {
+  if (!aiGradingStarted.value) return 0;
+  return aiGradingStudents.value.reduce(
     (sum, student) => sum + (student.questions ?? []).filter((question) => question.grading_result).length,
     0,
-  ),
-);
-const aiGradingRemainingAnswerCount = computed(() =>
-  aiGradingStudents.value.reduce(
+  );
+});
+const aiGradingRemainingAnswerCount = computed(() => {
+  if (!aiGradingStarted.value) {
+    return aiGradingAiEligibleAnswerCount.value;
+  }
+  return aiGradingStudents.value.reduce(
     (sum, student) =>
       sum + (student.questions ?? []).filter(
         (question) =>
@@ -2850,8 +3236,8 @@ const aiGradingRemainingAnswerCount = computed(() =>
           && !question.grading_result,
       ).length,
     0,
-  ),
-);
+  );
+});
 const aiGradingReviewRequiredCount = computed(() =>
   aiGradingResults.value.filter((result) => result.review_required).length,
 );
@@ -3113,7 +3499,7 @@ const exportPreviewRows = computed(() =>
     return {
       student_no: student.student_no || "未填写",
       student_name: student.student_name,
-      total_score: studentTeacherFinalScore(student),
+      total_score: Math.round(Number(studentTeacherFinalScore(student) ?? 0)),
       teacher_comment: comments.join("；"),
       review_status: Array.from(reviewStatuses).join("、"),
     };
@@ -3274,7 +3660,14 @@ const taskStages = [
     eyebrow: "Answer Extract",
     title: "答案抽取",
     caption: "按题匹配答案",
-    detail: "从每份学生作业中按题抽取答案，并标记 matched、missing、ambiguous 或 manual_check 等状态。",
+    detail: "从每份学生作业中按题抽取答案，并标记 matched、missing、ambiguous 或 extract_error 等状态。",
+  },
+  {
+    key: "plagiarism_check",
+    eyebrow: "Plagiarism Check",
+    title: "作业查重",
+    caption: "按题答案查重",
+    detail: "基于已抽取的每道题答案计算题目相似度，再按题目分值加权汇总为学生之间的总相似度；当前仅作独立测试，不影响后续批改。",
   },
   {
     key: "extract_evidence",
@@ -3415,7 +3808,7 @@ const taskMaterials = [
   {
     role: "student_submission",
     title: "学生作业",
-    description: "支持连续添加多份学生作业文件",
+    description: "支持单个文件连续添加，也支持上传 ZIP 压缩包（自动解压并识别「姓名_学号」文件夹）",
     multiple: true,
     accept: ".doc,.docx,.pdf,.txt,.md,.zip",
     readOnly: false,
@@ -3879,7 +4272,11 @@ function resetTaskDetailState() {
   questionAnalysisLoading.value = false;
   studentPrepareLoading.value = false;
   answerExtractionLoading.value = false;
+  reExtractingAnswerSubmissionId.value = null;
+  confirmingAnswerId.value = null;
   evidenceExtractionLoading.value = false;
+  reExtractingEvidenceSubmissionId.value = null;
+  reGradingSubmissionId.value = null;
   aiGradingLoading.value = false;
   reflectionLoading.value = false;
   taskFilesLoading.value = false;
@@ -3907,6 +4304,7 @@ function clearTaskStepsAfter(stageKey) {
   if (stageKey === "parse_files" || stageKey === "analyze_questions") {
     taskQuestions.value = [];
     clearTaskStudentMatches(selectedTaskId.value);
+    taskPlagiarism.value = { check: null, students: [] };
     taskAnswerExtraction.value = null;
     taskEvidenceExtraction.value = null;
     resetAiGradingState();
@@ -3928,6 +4326,8 @@ function clearTaskStepsAfter(stageKey) {
     || stageKey === "extract_answers"
   ) {
     selectedAnswerSubmissionId.value = null;
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
   }
   if (
     stageKey === "parse_files"
@@ -4188,6 +4588,7 @@ function openTaskDetail(task) {
   fetchTaskFiles(task.id);
   fetchTaskQuestions(task.id);
   fetchTaskClassStudents(task);
+  fetchTaskPlagiarismStudents(task.id);
   fetchTaskAnswerExtraction(task.id);
   fetchTaskEvidenceExtraction(task.id);
   fetchTaskGradingResults(task.id);
@@ -4808,18 +5209,20 @@ function openAnswerExtractionEventStream(url) {
     if (data.stage !== "extract_answers") return;
     updateAnswerStudentProgress(data, { status: "processing" });
   });
-  eventSource.addEventListener("student_done", (event) => {
+  eventSource.addEventListener("student_done", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
     updateAnswerStudentProgress(data, {
       status: "done",
       completed_questions: data.total_questions ?? taskQuestions.value.length,
     });
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
   });
-  eventSource.addEventListener("student_failed", (event) => {
+  eventSource.addEventListener("student_failed", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
     updateAnswerStudentProgress(data, { status: "failed", error_message: data.message ?? "抽取失败" });
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
   });
   eventSource.addEventListener("stage_done", async (event) => {
     const data = parseSseData(event);
@@ -4829,8 +5232,8 @@ function openAnswerExtractionEventStream(url) {
     await fetchTaskEvidenceExtraction(selectedTaskId.value);
     taskStore.updateTask(selectedTaskId.value, {
       status: "answers_extracted",
-      current_stage: "extract_evidence",
-      progress: taskProgressForStage("extract_evidence"),
+      current_stage: "plagiarism_check",
+      progress: taskProgressForStage("plagiarism_check"),
     });
     answerExtractionLoading.value = false;
     closeLlmEventStream(eventSource);
@@ -4850,6 +5253,64 @@ function openAnswerExtractionEventStream(url) {
   return eventSource;
 }
 
+function openSingleStudentAnswerExtractionEventStream(url, submissionId) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+  const normalizedSubmissionId = Number(submissionId);
+
+  const finishStream = async (success, message) => {
+    reExtractingAnswerSubmissionId.value = null;
+    closeLlmEventStream(eventSource);
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    await fetchTaskGradingResults(selectedTaskId.value);
+    if (success) {
+      ElMessage.success(message);
+    } else {
+      ElMessage.error(message);
+    }
+  };
+
+  eventSource.addEventListener("student_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateAnswerStudentProgress(data, {
+      status: "done",
+      completed_questions: data.total_questions ?? taskQuestions.value.length,
+    });
+    await finishStream(true, `${data.student_name || "该学生"}答案重新抽取完成`);
+  });
+  eventSource.addEventListener("student_failed", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateAnswerStudentProgress(data, {
+      status: "failed",
+      error_message: data.message ?? "抽取失败",
+    });
+    await finishStream(false, data.message || "该学生答案重新抽取失败");
+  });
+  eventSource.addEventListener("student_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateAnswerStudentProgress(data, { status: "processing", completed_questions: 0 });
+  });
+  eventSource.addEventListener("student_question_progress", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_answers") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateAnswerStudentProgress(data, { status: "processing" });
+  });
+  eventSource.onerror = () => {
+    if (reExtractingAnswerSubmissionId.value !== normalizedSubmissionId) return;
+    reExtractingAnswerSubmissionId.value = null;
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
 function openEvidenceExtractionEventStream(url) {
   const eventSource = new EventSource(url);
   activeEventSources.add(eventSource);
@@ -4863,6 +5324,7 @@ function openEvidenceExtractionEventStream(url) {
     taskEvidenceExtraction.value = {
       ...(taskEvidenceExtraction.value ?? buildInitialEvidenceSnapshot("queued")),
       status: "processing",
+      evidence_extraction_started: true,
       total_answers: data.total_answers ?? taskEvidenceExtraction.value?.total_answers ?? 0,
       completed_answers: data.completed_answers ?? taskEvidenceExtraction.value?.completed_answers ?? 0,
     };
@@ -4882,14 +5344,17 @@ function openEvidenceExtractionEventStream(url) {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
     updateEvidenceQuestionRuntime(data, "done");
+    clearActiveEvidenceSubmissionIfDone(data.submission_id);
     await fetchTaskQuestions(selectedTaskId.value);
     await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    clearActiveEvidenceSubmissionIfDone(data.submission_id);
   });
   eventSource.addEventListener("answer_failed", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
     updateEvidenceQuestionRuntime(data, "failed");
     await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    clearActiveEvidenceSubmissionIfDone(data.submission_id);
   });
   eventSource.addEventListener("answer_progress", (event) => {
     const data = parseSseData(event);
@@ -4926,6 +5391,242 @@ function openEvidenceExtractionEventStream(url) {
   });
   eventSource.onerror = () => {
     if (evidenceExtractionLoading.value) return;
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
+function openSingleStudentEvidenceExtractionEventStream(url, submissionId) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+  const normalizedSubmissionId = Number(submissionId);
+
+  const finishStream = async (success, message) => {
+    reExtractingEvidenceSubmissionId.value = null;
+    activeEvidenceSubmissionIds.value = new Set(
+      [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== normalizedSubmissionId),
+    );
+    closeLlmEventStream(eventSource);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    await fetchTaskGradingResults(selectedTaskId.value);
+    if (success) {
+      ElMessage.success(message);
+    } else {
+      ElMessage.error(message);
+    }
+  };
+
+  eventSource.addEventListener("student_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    clearActiveEvidenceSubmissionIfDone(normalizedSubmissionId);
+    await finishStream(true, `${data.student_name || "该学生"}证据重新提取完成`);
+  });
+  eventSource.addEventListener("student_failed", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    await finishStream(false, data.message || "该学生证据重新提取失败");
+  });
+  eventSource.addEventListener("student_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    activeEvidenceSubmissionIds.value = new Set([
+      ...activeEvidenceSubmissionIds.value,
+      normalizedSubmissionId,
+    ]);
+    if (taskEvidenceExtraction.value?.students?.length) {
+      taskEvidenceExtraction.value = {
+        ...taskEvidenceExtraction.value,
+        status: "processing",
+        evidence_extraction_started: true,
+        students: taskEvidenceExtraction.value.students.map((item) =>
+          Number(item.submission_id) === normalizedSubmissionId
+            ? { ...item, status: "processing" }
+            : item,
+        ),
+      };
+    }
+  });
+  eventSource.addEventListener("answer_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateEvidenceQuestionRuntime(data, "processing");
+  });
+  eventSource.addEventListener("answer_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateEvidenceQuestionRuntime(data, "done");
+    clearActiveEvidenceSubmissionIfDone(normalizedSubmissionId);
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    clearActiveEvidenceSubmissionIfDone(normalizedSubmissionId);
+  });
+  eventSource.addEventListener("answer_failed", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    updateEvidenceQuestionRuntime(data, "failed");
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    clearActiveEvidenceSubmissionIfDone(normalizedSubmissionId);
+  });
+  eventSource.onerror = () => {
+    if (reExtractingEvidenceSubmissionId.value !== normalizedSubmissionId) return;
+    reExtractingEvidenceSubmissionId.value = null;
+    activeEvidenceSubmissionIds.value = new Set(
+      [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== normalizedSubmissionId),
+    );
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
+function openAiGradingEventStream(url) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+
+  eventSource.addEventListener("stage_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    aiGradingLoading.value = true;
+    selectedProgressStageKey.value = "grade_by_question";
+    taskAiGrading.value = {
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "processing",
+      stage: "grade_by_question",
+    };
+  });
+  eventSource.addEventListener("question_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    taskAiGrading.value = {
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "processing",
+      stage: "grade_by_question",
+    };
+  });
+  eventSource.addEventListener("question_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    await fetchTaskGradingResults(selectedTaskId.value);
+  });
+  eventSource.addEventListener("question_progress", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    taskAiGrading.value = {
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "processing",
+      stage: "grade_by_question",
+    };
+  });
+  eventSource.addEventListener("stage_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    await fetchTaskGradingResults(selectedTaskId.value);
+    taskAiGrading.value = {
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "graded",
+      stage: "grade_by_question",
+    };
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "graded",
+      current_stage: "teacher_review",
+      progress: taskProgressForStage("teacher_review"),
+    });
+    selectedProgressStageKey.value = "teacher_review";
+    aiGradingLoading.value = false;
+    activeAiGradingSubmissionIds.value = new Set();
+    ensureTeacherReviewSelection();
+    closeLlmEventStream(eventSource);
+    ElMessage.success("AI评分完成");
+  });
+  eventSource.addEventListener("stage_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    taskAiGrading.value = {
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "failed",
+      stage: "grade_by_question",
+    };
+    aiGradingLoading.value = false;
+    activeAiGradingSubmissionIds.value = new Set();
+    closeLlmEventStream(eventSource);
+    ElMessage.error(data.message || "AI评分失败");
+  });
+  eventSource.onerror = () => {
+    if (aiGradingLoading.value) return;
+    closeLlmEventStream(eventSource);
+  };
+  return eventSource;
+}
+
+function openSingleStudentAiGradingEventStream(url, submissionId) {
+  const eventSource = new EventSource(url);
+  activeEventSources.add(eventSource);
+  const normalizedSubmissionId = Number(submissionId);
+
+  const finishStream = async (success, message) => {
+    reGradingSubmissionId.value = null;
+    activeAiGradingSubmissionIds.value = new Set(
+      [...activeAiGradingSubmissionIds.value].filter((id) => Number(id) !== normalizedSubmissionId),
+    );
+    closeLlmEventStream(eventSource);
+    await fetchTaskGradingResults(selectedTaskId.value);
+    if (success) {
+      ElMessage.success(message);
+    } else {
+      ElMessage.error(message);
+    }
+  };
+
+  eventSource.addEventListener("student_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    await finishStream(true, `${data.student_name || "该学生"}AI 重新评分完成`);
+  });
+  eventSource.addEventListener("student_failed", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    await finishStream(false, data.message || "该学生 AI 重新评分失败");
+  });
+  eventSource.addEventListener("student_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    activeAiGradingSubmissionIds.value = new Set([
+      ...activeAiGradingSubmissionIds.value,
+      normalizedSubmissionId,
+    ]);
+    if (taskAiGrading.value) {
+      taskAiGrading.value = {
+        ...taskAiGrading.value,
+        status: "processing",
+      };
+    }
+  });
+  eventSource.addEventListener("student_question_progress", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    await fetchTaskGradingResults(selectedTaskId.value);
+  });
+  eventSource.addEventListener("question_done", async (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "grade_by_question") return;
+    if (reGradingSubmissionId.value !== normalizedSubmissionId) return;
+    await fetchTaskGradingResults(selectedTaskId.value);
+  });
+  eventSource.onerror = () => {
+    if (reGradingSubmissionId.value !== normalizedSubmissionId) return;
+    reGradingSubmissionId.value = null;
+    activeAiGradingSubmissionIds.value = new Set(
+      [...activeAiGradingSubmissionIds.value].filter((id) => Number(id) !== normalizedSubmissionId),
+    );
     closeLlmEventStream(eventSource);
   };
   return eventSource;
@@ -5190,6 +5891,26 @@ async function fetchTaskQuestions(taskId) {
   }
 }
 
+async function fetchTaskPlagiarismStudents(taskId) {
+  if (!taskId) {
+    taskPlagiarism.value = { check: null, students: [] };
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
+    return;
+  }
+  try {
+    const snapshot = await getTaskPlagiarismStudents(taskId);
+    taskPlagiarism.value = snapshot;
+    if (!selectedPlagiarismSubmissionId.value && snapshot.students?.length) {
+      await selectPlagiarismStudent(snapshot.students[0].student_submission_id, { silent: true });
+    }
+  } catch {
+    taskPlagiarism.value = { check: null, students: [] };
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
+  }
+}
+
 async function fetchTaskAnswerExtraction(taskId) {
   if (!taskId) {
     taskAnswerExtraction.value = null;
@@ -5233,8 +5954,9 @@ async function fetchTaskGradingResults(taskId) {
   }
   try {
     const gradingResults = await getTaskGradingResults(taskId);
+    const hasRealGrades = gradingResults.some((result) => !isSystemMissingGradingResult(result));
     taskAiGrading.value = {
-      status: gradingResults.length ? "graded" : "pending",
+      status: hasRealGrades ? "graded" : "pending",
       stage: "grade_by_question",
       results: gradingResults,
     };
@@ -5317,10 +6039,13 @@ async function runStudentPrepare() {
   try {
     const result = await prepareTaskStudents(selectedTaskId.value);
     setTaskStudentMatches(selectedTaskId.value, result.matches ?? []);
+    taskPlagiarism.value = { check: null, students: [] };
     taskAnswerExtraction.value = null;
     taskEvidenceExtraction.value = null;
     resetAiGradingState();
     selectedAnswerSubmissionId.value = null;
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
     selectedEvidenceSubmissionId.value = null;
     selectedEvidenceQuestionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
@@ -5335,10 +6060,13 @@ async function runStudentPrepare() {
       selectedTaskFileGroup.value.student_submission ?? [],
     );
     setTaskStudentMatches(selectedTaskId.value, localMatches);
+    taskPlagiarism.value = { check: null, students: [] };
     taskAnswerExtraction.value = null;
     taskEvidenceExtraction.value = null;
     resetAiGradingState();
     selectedAnswerSubmissionId.value = null;
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
     selectedEvidenceSubmissionId.value = null;
     selectedEvidenceQuestionId.value = null;
     taskStore.updateTask(selectedTaskId.value, {
@@ -5349,6 +6077,290 @@ async function runStudentPrepare() {
     ElMessage.warning(error?.response?.data?.detail ?? "后端学生解析失败，已先按本地文件名和解析文本完成匹配预览");
   } finally {
     studentPrepareLoading.value = false;
+  }
+}
+
+async function runPlagiarismCheck() {
+  if (!selectedTaskId.value) return;
+  if (!answerExtractionHasAnswers.value) {
+    ElMessage.warning("请先完成答案抽取，再运行作业查重");
+    return;
+  }
+  plagiarismCheckLoading.value = true;
+  try {
+    await runTaskPlagiarismCheck(selectedTaskId.value);
+    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismMatchId.value = null;
+    await fetchTaskPlagiarismStudents(selectedTaskId.value);
+    taskStore.updateTask(selectedTaskId.value, {
+      status: selectedTask.value?.status ?? "answers_extracted",
+      current_stage: "extract_evidence",
+      progress: taskProgressForStage("extract_evidence"),
+    });
+    selectedProgressStageKey.value = "extract_evidence";
+    ElMessage.success("作业查重已完成");
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail ?? "作业查重失败");
+  } finally {
+    plagiarismCheckLoading.value = false;
+  }
+}
+
+async function selectPlagiarismStudent(submissionId, options = {}) {
+  if (!selectedTaskId.value || !submissionId) return;
+  selectedPlagiarismSubmissionId.value = submissionId;
+  try {
+    const detail = await getTaskPlagiarismStudentDetail(selectedTaskId.value, submissionId);
+    taskPlagiarism.value = {
+      ...taskPlagiarism.value,
+      check: detail.check ?? taskPlagiarism.value.check,
+      students: plagiarismStudents.value.map((student) =>
+        student.student_submission_id === submissionId ? detail : student,
+      ),
+    };
+    selectedPlagiarismMatchId.value = detail.matches?.[0]?.match_id ?? null;
+  } catch {
+    selectedPlagiarismMatchId.value = null;
+    if (!options.silent) {
+      ElMessage.warning("暂时无法读取该学生的重复片段");
+    }
+  }
+  await resetMiddleColumnScroll(plagiarismMatchListRef);
+}
+
+function selectPlagiarismMatch(matchId) {
+  selectedPlagiarismMatchId.value = matchId;
+}
+
+function clearStudentDownstreamAfterAnswerExtraction(submissionId) {
+  const normalizedId = Number(submissionId);
+  if (taskAnswerExtraction.value?.students?.length) {
+    taskAnswerExtraction.value = {
+      ...taskAnswerExtraction.value,
+      students: taskAnswerExtraction.value.students.map((item) =>
+        Number(item.submission_id) === normalizedId
+          ? {
+              ...item,
+              status: "pending",
+              completed_questions: 0,
+              answers: [],
+              error_message: "",
+              streaming_question_numbers: [],
+            }
+          : item,
+      ),
+    };
+  }
+  if (taskEvidenceExtraction.value?.students?.length) {
+    taskEvidenceExtraction.value = {
+      ...taskEvidenceExtraction.value,
+      students: taskEvidenceExtraction.value.students.map((item) =>
+        Number(item.submission_id) === normalizedId
+          ? {
+              ...item,
+              status: "pending",
+              questions: [],
+            }
+          : item,
+      ),
+    };
+  }
+  if (taskAiGrading.value?.results?.length) {
+    taskAiGrading.value = {
+      ...taskAiGrading.value,
+      results: taskAiGrading.value.results.filter(
+        (result) => Number(result.student_submission_id) !== normalizedId,
+      ),
+    };
+  }
+}
+
+function clearStudentDownstreamAfterEvidenceExtraction(submissionId) {
+  const normalizedId = Number(submissionId);
+  if (taskEvidenceExtraction.value?.students?.length) {
+    taskEvidenceExtraction.value = {
+      ...taskEvidenceExtraction.value,
+      students: taskEvidenceExtraction.value.students.map((item) =>
+        Number(item.submission_id) === normalizedId
+          ? {
+              ...item,
+              status: "pending",
+              questions: [],
+            }
+          : item,
+      ),
+    };
+  }
+  if (taskAiGrading.value?.results?.length) {
+    taskAiGrading.value = {
+      ...taskAiGrading.value,
+      results: taskAiGrading.value.results.filter(
+        (result) => Number(result.student_submission_id) !== normalizedId,
+      ),
+    };
+  }
+}
+
+async function runSingleStudentEvidenceExtraction(student) {
+  if (!selectedTaskId.value || !student?.submission_id) return;
+  if (evidenceExtractionLoading.value) {
+    ElMessage.warning("批量证据提取正在进行中，请稍候");
+    return;
+  }
+  if (reExtractingEvidenceSubmissionId.value) {
+    ElMessage.warning("已有学生正在重新提取证据，请稍候");
+    return;
+  }
+  if (!answerExtractionHasAnswers.value) {
+    ElMessage.warning("请先完成答案抽取，再提取评分证据");
+    return;
+  }
+
+  const hasExistingEvidence = (student.questions ?? []).some((question) => (question.evidence_items ?? []).length > 0)
+    || (evidenceExtractionStarted.value && studentEvidenceCompleted(student));
+  if (hasExistingEvidence) {
+    const confirmed = await confirmRestartStep({
+      title: "重新提取该学生证据",
+      message: "重新提取会替换该学生当前评分证据，并清空其后续 AI 评分和教师复核记录。",
+      confirmText: "确认重新提取",
+    });
+    if (!confirmed) return;
+    clearStudentDownstreamAfterEvidenceExtraction(student.submission_id);
+  }
+
+  reExtractingEvidenceSubmissionId.value = student.submission_id;
+  const eventSource = openSingleStudentEvidenceExtractionEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+    student.submission_id,
+  );
+  if (taskEvidenceExtraction.value?.students?.length) {
+    taskEvidenceExtraction.value = {
+      ...taskEvidenceExtraction.value,
+      status: "processing",
+      students: taskEvidenceExtraction.value.students.map((item) =>
+        Number(item.submission_id) === Number(student.submission_id)
+          ? { ...item, status: "processing" }
+          : item,
+      ),
+    };
+  }
+  try {
+    await startTaskEvidenceExtractionForSubmission(selectedTaskId.value, student.submission_id);
+  } catch (error) {
+    reExtractingEvidenceSubmissionId.value = null;
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "该学生证据重新提取启动失败");
+  }
+}
+
+function clearStudentDownstreamAfterGrading(submissionId) {
+  const normalizedId = Number(submissionId);
+  if (taskAiGrading.value?.results?.length) {
+    taskAiGrading.value = {
+      ...taskAiGrading.value,
+      results: taskAiGrading.value.results.filter(
+        (result) => Number(result.student_submission_id) !== normalizedId,
+      ),
+    };
+  }
+}
+
+async function runSingleStudentAiGrading(student) {
+  if (!selectedTaskId.value || !student?.submission_id) return;
+  if (aiGradingLoading.value) {
+    ElMessage.warning("批量 AI 评分正在进行中，请稍候");
+    return;
+  }
+  if (reGradingSubmissionId.value) {
+    ElMessage.warning("已有学生正在重新评分，请稍候");
+    return;
+  }
+  if (!evidenceExtractionHasEvidence.value) {
+    ElMessage.warning("请先完成评分证据提取，再开始 AI 评分");
+    return;
+  }
+
+  const hasExistingGrades = (student.questions ?? []).some((question) =>
+    gradingResultForAnswer(question.student_answer_id)
+    && !isSystemMissingGradingResult(gradingResultForAnswer(question.student_answer_id)),
+  );
+  if (hasExistingGrades) {
+    const confirmed = await confirmRestartStep({
+      title: "重新评分该学生",
+      message: "重新评分会替换该学生当前 AI 评分结果，并清空其教师复核记录。",
+      confirmText: "确认重新评分",
+    });
+    if (!confirmed) return;
+    clearStudentDownstreamAfterGrading(student.submission_id);
+  }
+
+  reGradingSubmissionId.value = student.submission_id;
+  const eventSource = openSingleStudentAiGradingEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+    student.submission_id,
+  );
+  activeAiGradingSubmissionIds.value = new Set([
+    ...activeAiGradingSubmissionIds.value,
+    student.submission_id,
+  ]);
+  if (taskAiGrading.value) {
+    taskAiGrading.value = {
+      ...taskAiGrading.value,
+      status: "processing",
+    };
+  }
+  try {
+    await startTaskAiGradingForSubmission(selectedTaskId.value, student.submission_id);
+  } catch (error) {
+    reGradingSubmissionId.value = null;
+    activeAiGradingSubmissionIds.value = new Set(
+      [...activeAiGradingSubmissionIds.value].filter((id) => Number(id) !== student.submission_id),
+    );
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "该学生 AI 重新评分启动失败");
+  }
+}
+
+async function runSingleStudentAnswerExtraction(student) {
+  if (!selectedTaskId.value || !student?.submission_id) return;
+  if (answerExtractionLoading.value) {
+    ElMessage.warning("批量答案抽取正在进行中，请稍候");
+    return;
+  }
+  if (reExtractingAnswerSubmissionId.value) {
+    ElMessage.warning("已有学生正在重新抽取，请稍候");
+    return;
+  }
+
+  const hasExistingAnswers = studentAnswerExtractionFinalized(student) || (student.answers ?? []).length > 0;
+  if (hasExistingAnswers) {
+    const confirmed = await confirmRestartStep({
+      title: "重新抽取该学生答案",
+      message: "重新抽取会替换该学生当前答案，并清空其后续证据、AI评分和教师复核记录。",
+      confirmText: "确认重新抽取",
+    });
+    if (!confirmed) return;
+    clearStudentDownstreamAfterAnswerExtraction(student.submission_id);
+  }
+
+  reExtractingAnswerSubmissionId.value = student.submission_id;
+  const eventSource = openSingleStudentAnswerExtractionEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+    student.submission_id,
+  );
+  updateAnswerStudentProgress(
+    {
+      submission_id: student.submission_id,
+      total_questions: taskQuestions.value.length,
+    },
+    { status: "processing", completed_questions: 0 },
+  );
+  try {
+    await startTaskAnswerExtractionForSubmission(selectedTaskId.value, student.submission_id);
+  } catch (error) {
+    reExtractingAnswerSubmissionId.value = null;
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "该学生答案重新抽取启动失败");
   }
 }
 
@@ -5507,49 +6519,44 @@ async function runAiGrading(force = false) {
   });
 
   try {
-    let allResults = force ? [] : [...aiGradingResults.value];
-    const batches = aiGradingStudentBatches(allResults);
+    let currentResults = force ? [] : [...aiGradingResults.value];
+    const batches = aiGradingStudentBatches(currentResults);
+    if (!batches.length) {
+      ElMessage.info("没有剩余答案需要 AI 评分");
+      return;
+    }
+
     for (const batch of batches) {
       activeAiGradingSubmissionIds.value = new Set(batch.map((student) => student.submission_id));
       for (const question of taskQuestions.value) {
-        const payload = buildGradeByQuestionPayload(question, batch, allResults);
+        const payload = buildGradeByQuestionPayload(question, batch, currentResults);
         if (!payload.student_answers.length) continue;
-        taskAiGrading.value = {
-          status: "processing",
-          stage: "grade_by_question",
-          results: allResults,
-        };
-        ensureAiGradingSelection();
         const response = await gradeTaskQuestion(selectedTaskId.value, payload);
-        allResults = mergeAiGradingResults(allResults, response.grading_results ?? []);
+        currentResults = mergeAiGradingResults(currentResults, response.grading_results ?? []);
         taskAiGrading.value = {
+          ...(taskAiGrading.value ?? { results: [] }),
           status: "processing",
           stage: "grade_by_question",
-          results: allResults,
+          results: currentResults,
         };
         ensureAiGradingSelection();
       }
     }
-    const completed = allResults.length >= aiGradingAiEligibleAnswerCount.value;
+
+    await fetchTaskGradingResults(selectedTaskId.value);
     taskAiGrading.value = {
-      status: completed ? "graded" : "partial",
+      ...(taskAiGrading.value ?? { results: [] }),
+      status: "graded",
       stage: "grade_by_question",
-      results: allResults,
     };
-    if (completed) {
-      taskStore.updateTask(selectedTaskId.value, {
-        status: "graded",
-        current_stage: "teacher_review",
-        progress: taskProgressForStage("teacher_review"),
-      });
-    }
-    selectedProgressStageKey.value = completed ? "teacher_review" : "grade_by_question";
-    if (completed) {
-      ensureTeacherReviewSelection();
-    } else {
-      ensureAiGradingSelection();
-    }
-    ElMessage.success(completed ? "AI评分完成" : "本轮可评分答案已处理完成");
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "graded",
+      current_stage: "teacher_review",
+      progress: taskProgressForStage("teacher_review"),
+    });
+    selectedProgressStageKey.value = "teacher_review";
+    ensureTeacherReviewSelection();
+    ElMessage.success("AI评分完成");
   } catch (error) {
     taskAiGrading.value = {
       ...taskAiGrading.value,
@@ -5557,8 +6564,8 @@ async function runAiGrading(force = false) {
     };
     ElMessage.error(error?.response?.data?.detail ?? "AI评分失败，请检查评分量规、证据和模型配置");
   } finally {
-    activeAiGradingSubmissionIds.value = new Set();
     aiGradingLoading.value = false;
+    activeAiGradingSubmissionIds.value = new Set();
   }
 }
 
@@ -5822,19 +6829,56 @@ function studentMatchStatusMeta(status) {
 }
 
 function answerStatusMeta(status) {
+  const normalizedStatus = status === "manual_check" ? "ambiguous" : status;
   const metaMap = {
     matched: { label: "已匹配", type: "success" },
     missing: { label: "缺答", type: "info" },
-    ambiguous: { label: "不确定", type: "warning" },
-    manual_check: { label: "需检查", type: "danger" },
+    ambiguous: { label: "需检查", type: "warning" },
     extract_error: { label: "失败", type: "danger" },
   };
-  return metaMap[status] ?? { label: "待抽取", type: "info" };
+  return metaMap[normalizedStatus] ?? { label: "待抽取", type: "info" };
 }
 
-function selectAnswerStudent(submissionId) {
+function answerNeedsExtractionConfirm(questionId) {
+  const status = answerForQuestion(questionId)?.extraction_status;
+  return status === "ambiguous" || status === "manual_check";
+}
+
+function updateLocalAnswerExtractionAnswer(answerId, patch) {
+  if (!taskAnswerExtraction.value?.students?.length) return;
+  taskAnswerExtraction.value = {
+    ...taskAnswerExtraction.value,
+    students: taskAnswerExtraction.value.students.map((student) => ({
+      ...student,
+      answers: (student.answers ?? []).map((answer) =>
+        Number(answer.id) === Number(answerId) ? { ...answer, ...patch } : answer,
+      ),
+    })),
+  };
+}
+
+async function confirmAnswerExtraction(questionId) {
+  const answer = answerForQuestion(questionId);
+  if (!selectedTaskId.value || !answer?.id) {
+    ElMessage.warning("当前答案尚未入库，请等待抽取完成后再确认");
+    return;
+  }
+  confirmingAnswerId.value = answer.id;
+  try {
+    const updated = await confirmTaskStudentAnswer(selectedTaskId.value, answer.id);
+    updateLocalAnswerExtractionAnswer(answer.id, updated);
+    ElMessage.success("已确认该题答案");
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail ?? "确认答案失败");
+  } finally {
+    confirmingAnswerId.value = null;
+  }
+}
+
+async function selectAnswerStudent(submissionId) {
   selectedAnswerSubmissionId.value = submissionId;
   hoveredAnswerQuestionId.value = null;
+  await resetMiddleColumnScroll(answerListViewRef);
   scrollSelectedAnswerToFirstHighlight();
 }
 
@@ -5861,6 +6905,13 @@ async function focusAnswerQuestion(questionId, origin = "auto") {
   if (!shouldSkipAnswerAutoScroll("source", origin)) {
     scrollAnswerSourceToQuestion(questionId);
   }
+}
+
+async function resetMiddleColumnScroll(containerRef) {
+  await nextTick();
+  const container = containerRef?.value;
+  if (!container) return;
+  container.scrollTo({ top: 0, behavior: "auto" });
 }
 
 async function scrollSelectedAnswerToFirstHighlight() {
@@ -5989,6 +7040,7 @@ function buildInitialEvidenceSnapshot(status = "queued") {
     task_id: selectedTaskId.value,
     status,
     stage: "extract_evidence",
+    evidence_extraction_started: isCompleted,
     total_answers: totalAnswers,
     completed_answers: isCompleted ? totalAnswers : 0,
     students,
@@ -6004,6 +7056,7 @@ function markEvidenceExtractionStarted(started = {}) {
     ...nextSnapshot,
     status: "processing",
     stage: "extract_evidence",
+    evidence_extraction_started: true,
     total_answers: started.total_answers ?? nextSnapshot.total_answers ?? 0,
     completed_answers: started.completed_answers ?? nextSnapshot.completed_answers ?? 0,
     students: (nextSnapshot.students ?? []).map((student) => ({
@@ -6054,6 +7107,7 @@ function updateEvidenceQuestionRuntime(data, status) {
   taskEvidenceExtraction.value = {
     ...baseSnapshot,
     status: "processing",
+    evidence_extraction_started: true,
     students: nextStudents,
   };
   ensureEvidenceSelection();
@@ -6062,6 +7116,7 @@ function updateEvidenceQuestionRuntime(data, status) {
 function selectEvidenceStudent(submissionId) {
   selectedEvidenceSubmissionId.value = submissionId;
   selectedEvidenceQuestionId.value = selectedEvidenceQuestions.value[0]?.question_id ?? null;
+  resetMiddleColumnScroll(evidenceQuestionViewRef);
 }
 
 function selectEvidenceQuestion(questionId) {
@@ -6092,18 +7147,42 @@ function evidenceForRubric(question, rubricId) {
 }
 
 function evidenceQuestionComplete(question) {
-  if (evidenceQuestionSkipsExtraction(question)) return true;
-  const rubrics = taskQuestions.value.find((item) => item.id === question?.question_id)?.rubrics ?? [];
   const evidenceItems = question?.evidence_items ?? [];
-  if (!rubrics.length) return evidenceItems.length > 0;
-  const evidenceRubricIds = new Set(evidenceItems.map((item) => String(item.rubric_id)));
-  return rubrics.every((rubric) => evidenceRubricIds.has(String(rubric.id)));
+  const rubrics = taskQuestions.value.find((item) => item.id === question?.question_id)?.rubrics ?? [];
+  const hasStoredEvidence = () => {
+    if (!evidenceItems.length) return false;
+    if (!rubrics.length) return true;
+    const evidenceRubricIds = new Set(evidenceItems.map((item) => String(item.rubric_id)));
+    return rubrics.every((rubric) => evidenceRubricIds.has(String(rubric.id)));
+  };
+
+  if (!evidenceExtractionStarted.value) {
+    return hasStoredEvidence();
+  }
+  if (evidenceQuestionSkipsExtraction(question)) return true;
+  return hasStoredEvidence();
 }
 
 function gradingResultForAnswer(studentAnswerId) {
   return aiGradingResults.value.find(
     (result) => String(result.student_answer_id) === String(studentAnswerId),
   ) ?? null;
+}
+
+function isSystemMissingGradingResult(result) {
+  if (!result) return false;
+  if (result.grading_status === "missing") return true;
+  const raw = result.raw_llm_output;
+  if (raw && typeof raw === "object" && raw.source === "system_missing_answer") return true;
+  if (typeof raw === "string" && raw.includes("system_missing_answer")) return true;
+  return false;
+}
+
+function visibleGradingResultForAnswer(studentAnswerId) {
+  const result = gradingResultForAnswer(studentAnswerId);
+  if (!result) return null;
+  if (!aiGradingStarted.value && isSystemMissingGradingResult(result)) return null;
+  return result;
 }
 
 function questionMaxScore(questionId) {
@@ -6172,10 +7251,12 @@ function reviewPriorityMeta(priority) {
 }
 
 function studentAiGradingCompletedQuestionCount(student) {
+  if (!aiGradingStarted.value) return 0;
   return (student?.questions ?? []).filter((question) => question.grading_result).length;
 }
 
 function studentAiGradingCompleted(student) {
+  if (!aiGradingStarted.value) return false;
   const questions = student?.questions ?? [];
   return Boolean(questions.length && studentAiGradingCompletedQuestionCount(student) >= questions.length);
 }
@@ -6189,12 +7270,14 @@ function studentAiGradingRunning(student) {
 }
 
 function studentAiGradingProgress(student) {
+  if (!aiGradingStarted.value) return 0;
   const total = Number(student?.questions?.length ?? 0);
   if (!total) return 0;
   return Math.round((studentAiGradingCompletedQuestionCount(student) / total) * 100);
 }
 
 function studentAiScore(student) {
+  if (!aiGradingStarted.value) return "-";
   const scoredQuestions = (student?.questions ?? []).filter((question) => question.grading_result);
   if (!scoredQuestions.length) return "-";
   const total = scoredQuestions.reduce((sum, question) => sum + Number(question.grading_result?.score ?? 0), 0);
@@ -6204,6 +7287,8 @@ function studentAiScore(student) {
 function selectAiGradingStudent(submissionId) {
   selectedAiGradingSubmissionId.value = submissionId;
   selectedAiGradingQuestionId.value = selectedAiGradingQuestions.value[0]?.question_id ?? null;
+  resetMiddleColumnScroll(aiGradingResultViewRef);
+  resetMiddleColumnScroll(aiGradingEvidenceViewRef);
 }
 
 function selectAiGradingQuestion(questionId) {
@@ -6411,7 +7496,7 @@ function reviewReasonMeta(key) {
     dimension_score_exceeds_max: { label: "维度超分", type: "danger" },
     empty_answer_scored: { label: "空答案给分", type: "danger" },
     grading_low_confidence: { label: "评分置信度低", type: "warning" },
-    answer_low_confidence: { label: "答案抽取不确定", type: "warning" },
+    answer_low_confidence: { label: "答案抽取需检查", type: "warning" },
     evidence_low_confidence: { label: "证据置信度低", type: "warning" },
     negative_evidence_full_score: { label: "负向证据却给满分", type: "warning" },
     no_positive_evidence_high_score: { label: "正向证据不足但给高分", type: "warning" },
@@ -6566,6 +7651,8 @@ function studentTeacherFinalScore(student) {
 function selectTeacherReviewStudent(submissionId) {
   selectedTeacherReviewSubmissionId.value = submissionId;
   selectedTeacherReviewQuestionId.value = filteredTeacherReviewQuestions.value[0]?.question_id ?? null;
+  resetMiddleColumnScroll(teacherReviewQuestionListRef);
+  resetMiddleColumnScroll(teacherReviewDetailRef);
 }
 
 function selectTeacherReviewQuestion(questionId) {
@@ -6652,6 +7739,75 @@ function buildTeacherReviewPayload(questionItem, draft) {
   };
 }
 
+function teacherReviewAnswerSyncKey(questionItem) {
+  const answerText = String(questionItem?.answer_text ?? "");
+  if (!answerText.trim()) return "";
+  return answerText;
+}
+
+function teacherReviewSameAnswerTargets(sourceQuestionItem) {
+  const sourceKey = teacherReviewAnswerSyncKey(sourceQuestionItem);
+  const sourceResultKey = teacherReviewRevisionKey(sourceQuestionItem?.grading_result);
+  if (!sourceKey) {
+    return [{ student: selectedTeacherReviewStudent.value, questionItem: sourceQuestionItem }];
+  }
+
+  const targets = [];
+  teacherReviewStudents.value.forEach((student) => {
+    (student.questions ?? []).forEach((questionItem) => {
+      if (!questionItem?.grading_result) return;
+      if (Number(questionItem.question_id) !== Number(sourceQuestionItem.question_id)) return;
+      if (teacherReviewAnswerSyncKey(questionItem) !== sourceKey) return;
+      targets.push({ student, questionItem });
+    });
+  });
+
+  targets.sort((left, right) => {
+    const leftIsSource = teacherReviewRevisionKey(left.questionItem?.grading_result) === sourceResultKey;
+    const rightIsSource = teacherReviewRevisionKey(right.questionItem?.grading_result) === sourceResultKey;
+    if (leftIsSource === rightIsSource) return 0;
+    return leftIsSource ? -1 : 1;
+  });
+  return targets.length ? targets : [{ student: selectedTeacherReviewStudent.value, questionItem: sourceQuestionItem }];
+}
+
+function buildLocalTeacherRevision(questionItem, draft, student = selectedTeacherReviewStudent.value) {
+  const result = questionItem?.grading_result;
+  return normalizeTeacherRevision({
+    grading_result_id: result.id,
+    student_answer_id: result.student_answer_id,
+    student_submission_id: student?.submission_id ?? result.student_submission_id,
+    question_id: questionItem.question_id,
+    final_score: Number(draft.final_score ?? result.score ?? 0),
+    review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
+    final_comment: draft.final_comment ?? draft.teacher_comment?.trim() ?? "",
+    teacher_comment: draft.teacher_comment?.trim() ?? draft.final_comment ?? "",
+    revision_reason: draft.revision_reason?.trim() ?? "",
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function applyTeacherReviewRevisions(taskKey, revisions) {
+  const revisionEntries = Object.fromEntries(
+    revisions
+      .map((revision) => [String(revision.grading_result_id ?? revision.student_answer_id ?? ""), revision])
+      .filter(([key]) => key),
+  );
+  teacherRevisionMap.value = {
+    ...teacherRevisionMap.value,
+    [taskKey]: {
+      ...(teacherRevisionMap.value[taskKey] ?? {}),
+      ...revisionEntries,
+    },
+  };
+  writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+  revisions.forEach((revision) => {
+    if (revision.grading_result_id) {
+      applyReviewToAiGradingResult(revision.grading_result_id, revision);
+    }
+  });
+}
+
 function applyReviewToAiGradingResult(resultId, revision) {
   taskAiGrading.value = {
     ...taskAiGrading.value,
@@ -6669,60 +7825,62 @@ function applyReviewToAiGradingResult(resultId, revision) {
   };
 }
 
-async function saveTeacherReviewRevision(questionItem, draft) {
+async function saveTeacherReviewRevision(questionItem, draft, options = {}) {
   const result = questionItem?.grading_result;
   const key = teacherReviewRevisionKey(result);
   if (!selectedTaskId.value || !key) return null;
   const taskKey = String(selectedTaskId.value);
-  const localRevision = normalizeTeacherRevision({
-    grading_result_id: result.id,
-    student_answer_id: result.student_answer_id,
-    student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
-    question_id: questionItem.question_id,
-    final_score: Number(draft.final_score ?? result.score ?? 0),
-    review_status: draft.review_status ?? inferTeacherReviewStatus(questionItem, draft),
-    final_comment: draft.final_comment ?? draft.teacher_comment?.trim() ?? "",
-    teacher_comment: draft.teacher_comment?.trim() ?? draft.final_comment ?? "",
-    revision_reason: draft.revision_reason?.trim() ?? "",
-    updated_at: new Date().toISOString(),
-  });
-  const nextTaskRevisions = {
-    ...(teacherRevisionMap.value[taskKey] ?? {}),
-    [key]: localRevision,
+  const targets = options.syncSimilarAnswers === false
+    ? [{ student: selectedTeacherReviewStudent.value, questionItem }]
+    : teacherReviewSameAnswerTargets(questionItem);
+  const localRevisions = targets.map((target) =>
+    buildLocalTeacherRevision(target.questionItem, draft, target.student),
+  );
+  applyTeacherReviewRevisions(taskKey, localRevisions);
+
+  const persistRevision = async () => {
+    const savedRevisions = await Promise.all(targets.map(async (target, index) => {
+      const targetResult = target.questionItem.grading_result;
+      const savedRevision = await reviewTaskGradingResult(
+        selectedTaskId.value,
+        targetResult.id,
+        buildTeacherReviewPayload(target.questionItem, draft),
+      );
+      return normalizeTeacherRevision({
+        ...localRevisions[index],
+        ...savedRevision,
+        student_answer_id: targetResult.student_answer_id,
+        student_submission_id: target.student?.submission_id ?? targetResult.student_submission_id,
+        question_id: target.questionItem.question_id,
+      });
+    }));
+    applyTeacherReviewRevisions(taskKey, savedRevisions);
+    return {
+      ...savedRevisions[0],
+      synced_count: savedRevisions.length,
+    };
   };
-  teacherRevisionMap.value = {
-    ...teacherRevisionMap.value,
-    [taskKey]: nextTaskRevisions,
-  };
-  writeLocalTeacherRevisionMap(teacherRevisionMap.value);
+
+  if (options.waitForBackend === false) {
+    void persistRevision().catch((error) => {
+      if (!options.silentBackendError) {
+        ElMessage.warning(error?.response?.data?.detail ?? "后端复核保存失败，已暂存到本地");
+      }
+    });
+    return {
+      ...localRevisions[0],
+      synced_count: localRevisions.length,
+    };
+  }
 
   try {
-    const savedRevision = await reviewTaskGradingResult(
-      selectedTaskId.value,
-      result.id,
-      buildTeacherReviewPayload(questionItem, draft),
-    );
-    const normalizedSavedRevision = normalizeTeacherRevision({
-      ...localRevision,
-      ...savedRevision,
-      student_answer_id: result.student_answer_id,
-      student_submission_id: selectedTeacherReviewStudent.value?.submission_id,
-      question_id: questionItem.question_id,
-    });
-    teacherRevisionMap.value = {
-      ...teacherRevisionMap.value,
-      [taskKey]: {
-        ...(teacherRevisionMap.value[taskKey] ?? {}),
-        [key]: normalizedSavedRevision,
-      },
-    };
-    writeLocalTeacherRevisionMap(teacherRevisionMap.value);
-    applyReviewToAiGradingResult(result.id, normalizedSavedRevision);
-    return normalizedSavedRevision;
+    return await persistRevision();
   } catch (error) {
-    applyReviewToAiGradingResult(result.id, localRevision);
     ElMessage.warning(error?.response?.data?.detail ?? "后端复核保存失败，已暂存到本地");
-    return localRevision;
+    return {
+      ...localRevisions[0],
+      synced_count: localRevisions.length,
+    };
   }
 }
 
@@ -6750,29 +7908,45 @@ async function saveTeacherReviewDraft() {
     current_stage: "teacher_review",
     progress: taskProgressForStage("teacher_review"),
   });
-  ElMessage.success("复核记录已保存");
+  ElMessage.success(
+    revision.synced_count > 1
+      ? `复核记录已保存，并同步 ${revision.synced_count - 1} 条相同答案`
+      : "复核记录已保存",
+  );
 }
 
 async function confirmStableTeacherReviewItems() {
+  if (confirmingStableTeacherReview.value) return;
   const pendingItems = [...teacherReviewPendingStableItems.value];
   if (!pendingItems.length) {
     ElMessage.info("当前没有待确认的稳定项");
     return;
   }
-  await Promise.all(pendingItems.map((questionItem) =>
-    saveTeacherReviewRevision(questionItem, {
-      final_score: Number(questionItem.grading_result?.score ?? 0),
-      review_status: "teacher_confirmed",
-      teacher_comment: questionItem.grading_result?.ai_comment ?? "",
-      revision_reason: "",
-    }),
-  ));
-  taskStore.updateTask(selectedTaskId.value, {
-    status: "teacher_reviewed",
-    current_stage: "teacher_review",
-    progress: taskProgressForStage("teacher_review"),
-  });
-  ElMessage.success(`已确认 ${pendingItems.length} 条稳定评分`);
+  confirmingStableTeacherReview.value = true;
+  try {
+    const revisions = await Promise.all(pendingItems.map((questionItem) =>
+      saveTeacherReviewRevision(questionItem, {
+        final_score: Number(questionItem.grading_result?.score ?? 0),
+        review_status: "teacher_confirmed",
+        teacher_comment: questionItem.grading_result?.ai_comment ?? "",
+        revision_reason: "",
+      }, {
+        waitForBackend: false,
+        silentBackendError: true,
+        syncSimilarAnswers: false,
+      }),
+    ));
+    const confirmedCount = revisions.filter(Boolean).length;
+    taskStore.updateTask(selectedTaskId.value, {
+      status: "teacher_reviewed",
+      current_stage: "teacher_review",
+      progress: taskProgressForStage("teacher_review"),
+    });
+    ensureTeacherReviewSelection();
+    ElMessage.success(`已确认 ${confirmedCount} 条稳定评分`);
+  } finally {
+    confirmingStableTeacherReview.value = false;
+  }
 }
 
 function buildTeacherReviewExportPayload() {
@@ -6808,6 +7982,410 @@ function downloadBlobResponse(response, fallbackFilename) {
   window.URL.revokeObjectURL(url);
 }
 
+function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-8") {
+  const url = window.URL.createObjectURL(new Blob([content], { type: mimeType }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+function safeDownloadFilename(name, fallback = "gradetap") {
+  const normalized = String(name || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+  return normalized || fallback;
+}
+
+function buildAutoGradeScriptRows() {
+  return exportPreviewRows.value.map((row) => ({
+    studentId: row.student_no === "未填写" ? "" : String(row.student_no || ""),
+    name: String(row.student_name || ""),
+    score: row.total_score,
+    comment: String(row.teacher_comment || ""),
+  }));
+}
+
+function buildAutoGradeConsoleScript(rows, taskName) {
+  const gradeRowsJson = JSON.stringify(rows, null, 2);
+  return `// 自动录入“${taskName}”的总分和评语，并点击“批阅”保存
+// 使用方式：打开教师空间的“作业批阅”页面 -> F12 -> Console -> 粘贴并回车。
+// 如需中途停止，在 Console 输入：stopAutoGrade()
+// 数据来源：GradeTap 导出预览中的“学号、姓名、总分、教师评语”。
+
+(async function () {
+  "use strict";
+
+  /***********************
+   * 运行参数
+   ***********************/
+  const CONFIG = {
+    // 0 表示处理全部学生；第一次测试可改为 1，只录入第 1 个学生
+    LIMIT: 0,
+
+    // 从第几个学生开始，0 表示从第 1 个开始
+    START_INDEX: 0,
+
+    // 每次保存后等待时间，网络慢可改成 2500 或 3000
+    AFTER_SAVE_WAIT_MS: 1800,
+
+    // 搜索学生后等待列表刷新时间，网络慢可改成 1200 或 1500
+    AFTER_SEARCH_WAIT_MS: 900,
+
+    // 是否点击“批阅”按钮保存。true=真正保存；false=只填入不点击保存
+    AUTO_CLICK_REVIEW: true,
+
+    // 如果点击“批阅”后出现确认弹窗，是否自动点“确 定”
+    AUTO_CONFIRM_DIALOG: true,
+
+    // 评语输入框网页限制 500 字，这里自动截断到 500 字
+    MAX_COMMENT_LEN: 500
+  };
+
+  const gradeRows = ${gradeRowsJson};
+
+  window.__autoGradeStop = false;
+  window.stopAutoGrade = function () {
+    window.__autoGradeStop = true;
+    console.warn("已请求停止。当前学生处理结束后会停止。");
+  };
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  function normalizeText(s) {
+    return String(s || "").replace(/\\s+/g, " ").trim();
+  }
+
+  function isVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isDisabled(el) {
+    return !el || el.disabled || el.getAttribute("disabled") !== null || el.classList.contains("is-disabled");
+  }
+
+  function getVisibleElements(selector, root = document) {
+    return Array.from(root.querySelectorAll(selector)).filter(isVisible);
+  }
+
+  async function waitFor(fn, timeoutMs = 8000, intervalMs = 150) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const val = fn();
+      if (val) return val;
+      await sleep(intervalMs);
+    }
+    return null;
+  }
+
+  function setNativeValue(el, value) {
+    if (!el) throw new Error("setNativeValue: element is empty");
+
+    const tag = el.tagName.toLowerCase();
+    const proto = tag === "textarea" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+
+    el.focus();
+    if (setter) setter.call(el, String(value));
+    else el.value = String(value);
+
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  function clickElement(el) {
+    if (!el) return false;
+    el.scrollIntoView({ block: "center", inline: "center" });
+    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.click();
+    return true;
+  }
+
+  function getSearchInput() {
+    return getVisibleElements('input[placeholder*="学生姓名"], input[placeholder*="学号"], .stuList input.el-input__inner')
+      .find(el => normalizeText(el.getAttribute("placeholder")).includes("学生"));
+  }
+
+  function getSearchButton(searchInput) {
+    const box = searchInput?.closest(".input-with-select, .el-input-group, .el-input");
+    const btn = box?.querySelector(".el-input-group__append button, button .el-icon-search, button");
+    if (!btn) return null;
+    return btn.closest("button") || btn;
+  }
+
+  async function searchStudent(record) {
+    const searchInput = await waitFor(getSearchInput, 8000);
+    if (!searchInput) throw new Error("没有找到学生搜索框：input[placeholder='请输入学生姓名或学号']");
+
+    const keyword = record.studentId || record.name;
+    setNativeValue(searchInput, keyword);
+
+    searchInput.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+    searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+
+    const searchBtn = getSearchButton(searchInput);
+    if (searchBtn) clickElement(searchBtn);
+
+    await sleep(CONFIG.AFTER_SEARCH_WAIT_MS);
+  }
+
+  function findStudentRow(record) {
+    const keys = [record.studentId, record.name].filter(Boolean).map(normalizeText);
+    const roots = [
+      document.querySelector(".stuList"),
+      document.querySelector(".stuListCard"),
+      document
+    ].filter(Boolean);
+
+    for (const root of roots) {
+      const rowSelectors = [
+        ".el-table__body-wrapper tr.el-table__row",
+        "tr.el-table__row",
+        ".el-table__row",
+        "[class*='stu'] tr",
+        "[class*='student']",
+        "[class*='stu']"
+      ];
+
+      for (const selector of rowSelectors) {
+        const rows = getVisibleElements(selector, root)
+          .filter(el => normalizeText(el.innerText).length > 0)
+          .sort((a, b) => normalizeText(a.innerText).length - normalizeText(b.innerText).length);
+
+        const matched = rows.find(el => {
+          const t = normalizeText(el.innerText);
+          return keys.some(k => k && t.includes(k));
+        });
+
+        if (matched) return matched;
+      }
+    }
+
+    return null;
+  }
+
+  async function openStudent(record) {
+    await searchStudent(record);
+
+    const row = await waitFor(() => findStudentRow(record), 6000);
+    if (!row) {
+      throw new Error(\`没有在学生列表中找到：\${record.name} / \${record.studentId}\`);
+    }
+
+    clickElement(row);
+    await sleep(1000);
+  }
+
+  function findControlByLabel(labelKeywords, controlSelector) {
+    const keywords = labelKeywords.map(normalizeText);
+    const formItems = getVisibleElements(".el-form-item");
+    for (const item of formItems) {
+      const label = item.querySelector(".el-form-item__label, label");
+      const labelText = normalizeText(label?.innerText || label?.textContent || "");
+      if (keywords.some(k => labelText.includes(k))) {
+        const control = getVisibleElements(controlSelector, item).find(el => !isDisabled(el));
+        if (control) return control;
+      }
+    }
+
+    const controls = getVisibleElements(controlSelector).filter(el => !isDisabled(el));
+    for (const el of controls) {
+      const haystack = normalizeText([
+        el.getAttribute("placeholder"),
+        el.getAttribute("aria-label"),
+        el.getAttribute("name"),
+        el.getAttribute("id"),
+        el.className
+      ].join(" "));
+      if (keywords.some(k => haystack.includes(k))) return el;
+    }
+
+    return null;
+  }
+
+  function getScoreInput() {
+    return (
+      findControlByLabel(["得分", "成绩", "分数"], "input.el-input__inner, input[type='text'], input[type='number']") ||
+      getVisibleElements(".stufraction1 input.el-input__inner, .sroceBox input.el-input__inner").find(el => !isDisabled(el))
+    );
+  }
+
+  function getCommentTextarea() {
+    return (
+      findControlByLabel(["评语", "评价", "批语"], "textarea.el-textarea__inner, textarea") ||
+      getVisibleElements("textarea.el-textarea__inner, textarea").find(el => !isDisabled(el))
+    );
+  }
+
+  function findButtonByText(texts, root = document) {
+    const targetTexts = Array.isArray(texts) ? texts : [texts];
+    const buttons = getVisibleElements("button", root)
+      .filter(btn => !isDisabled(btn))
+      .filter(btn => {
+        const t = normalizeText(btn.innerText || btn.textContent);
+        return targetTexts.some(target => t === target || t.includes(target));
+      });
+
+    return buttons[0] || null;
+  }
+
+  function getReviewButton() {
+    const preferredRoots = [
+      document.querySelector(".postdw"),
+      document.querySelector(".fujianWork"),
+      document.querySelector(".previewContent"),
+      document
+    ].filter(Boolean);
+
+    for (const root of preferredRoots) {
+      const btn = findButtonByText(["批阅"], root);
+      if (btn && !normalizeText(btn.innerText).includes("批量")) return btn;
+    }
+
+    return null;
+  }
+
+  function getVisibleDialogConfirmButton() {
+    const dialogs = getVisibleElements(".el-dialog__wrapper, .el-message-box__wrapper, [role='dialog']")
+      .filter(d => isVisible(d));
+    for (const dialog of dialogs) {
+      const btn = findButtonByText(["确 定", "确定", "确认"], dialog);
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  async function fillAndSave(record, index) {
+    console.group(\`[\${index + 1}/\${gradeRows.length}] \${record.name} \${record.studentId}\`);
+
+    await openStudent(record);
+
+    const scoreInput = await waitFor(getScoreInput, 8000);
+    if (!scoreInput) throw new Error("没有找到“得分/成绩”输入框");
+
+    const commentTextarea = await waitFor(getCommentTextarea, 8000);
+    if (!commentTextarea) throw new Error("没有找到“评语”输入框");
+
+    const scoreText = String(record.score ?? "").trim();
+    const commentText = String(record.comment ?? "").slice(0, CONFIG.MAX_COMMENT_LEN);
+
+    setNativeValue(scoreInput, scoreText);
+    await sleep(120);
+
+    setNativeValue(commentTextarea, commentText);
+    await sleep(120);
+
+    console.log("已填入：", { 姓名: record.name, 学号: record.studentId, 得分: scoreText, 评语字数: commentText.length });
+
+    if (!CONFIG.AUTO_CLICK_REVIEW) {
+      console.warn("AUTO_CLICK_REVIEW=false：已填入但未点击批阅。");
+      console.groupEnd();
+      return;
+    }
+
+    const reviewBtn = await waitFor(getReviewButton, 8000);
+    if (!reviewBtn) throw new Error("没有找到右侧/下方的“批阅”按钮");
+
+    clickElement(reviewBtn);
+    console.log("已点击“批阅”按钮，等待保存完成……");
+
+    if (CONFIG.AUTO_CONFIRM_DIALOG) {
+      await sleep(500);
+      const confirmBtn = getVisibleDialogConfirmButton();
+      if (confirmBtn) {
+        clickElement(confirmBtn);
+        console.log("已点击确认弹窗。");
+      }
+    }
+
+    await sleep(CONFIG.AFTER_SAVE_WAIT_MS);
+    console.groupEnd();
+  }
+
+  async function main() {
+    const rows = gradeRows
+      .filter(r => r && (r.studentId || r.name) && r.score !== undefined && r.score !== null && r.score !== "")
+      .slice(CONFIG.START_INDEX, CONFIG.LIMIT > 0 ? CONFIG.START_INDEX + CONFIG.LIMIT : undefined);
+
+    if (!rows.length) {
+      console.error("没有可录入的数据。请检查 gradeRows / CONFIG。");
+      return;
+    }
+
+    const msg = [
+      \`准备录入 \${rows.length} 名学生成绩。\`,
+      \`AUTO_CLICK_REVIEW=\${CONFIG.AUTO_CLICK_REVIEW}。\`,
+      "请确认当前页面已打开到该作业的“作业批阅”页面，并且你有批阅权限。",
+      "开始后如需停止，在 Console 输入：stopAutoGrade()"
+    ].join("\\n");
+
+    if (!confirm(msg)) {
+      console.warn("已取消。");
+      return;
+    }
+
+    const failed = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (window.__autoGradeStop) {
+        console.warn("用户请求停止，已中断。");
+        break;
+      }
+
+      const record = rows[i];
+      const realIndex = CONFIG.START_INDEX + i;
+
+      try {
+        await fillAndSave(record, realIndex);
+      } catch (err) {
+        console.error(\`处理失败：\${record.name} / \${record.studentId}\`, err);
+        failed.push({ ...record, error: err.message || String(err) });
+
+        const goOn = confirm(\`处理失败：\${record.name} / \${record.studentId}\\n错误：\${err.message || err}\\n\\n是否继续处理下一个学生？\`);
+        if (!goOn) break;
+      }
+    }
+
+    console.log("自动录入结束。失败名单：", failed);
+    if (failed.length) {
+      alert(\`自动录入结束，但有 \${failed.length} 个失败。请查看 Console 失败名单。\`);
+    } else {
+      alert("自动录入完成。");
+    }
+  }
+
+  await main();
+})();
+`;
+}
+
+function runAutoGradeScriptExport() {
+  const rows = buildAutoGradeScriptRows();
+  if (!rows.length) {
+    ElMessage.warning("暂无可导出的成绩脚本");
+    return;
+  }
+  const taskName = selectedTask.value?.task_name || `task-${selectedTaskId.value || "results"}`;
+  const script = buildAutoGradeConsoleScript(rows, taskName);
+  downloadTextFile(
+    script,
+    `${safeDownloadFilename(taskName)}-auto-grade-console-script.js`,
+    "text/javascript;charset=utf-8",
+  );
+  ElMessage.success("JS 自动录入脚本已生成");
+}
+
 async function runResultExport() {
   if (!selectedTaskId.value) return;
   if (!aiGradingResults.value.length) {
@@ -6833,6 +8411,7 @@ async function runResultExport() {
 }
 
 function studentEvidenceCompleted(student) {
+  if (!evidenceExtractionStarted.value) return false;
   if (student?.status === "done") return true;
   const questions = student?.questions ?? [];
   return Boolean(
@@ -6846,6 +8425,7 @@ function studentEvidenceCompleted(student) {
 }
 
 function studentEvidenceCompletedQuestionCount(student) {
+  if (!evidenceExtractionStarted.value) return 0;
   return (student?.questions ?? []).filter((question) =>
     evidenceQuestionComplete(question)
     || question.processing_status === "done"
@@ -6853,8 +8433,22 @@ function studentEvidenceCompletedQuestionCount(student) {
   ).length;
 }
 
+function clearActiveEvidenceSubmissionIfDone(submissionId) {
+  const normalizedId = Number(submissionId);
+  if (!Number.isFinite(normalizedId)) return;
+  const student = taskEvidenceExtraction.value?.students?.find(
+    (item) => Number(item.submission_id) === normalizedId,
+  );
+  if (!student || !studentEvidenceCompleted(student)) return;
+  activeEvidenceSubmissionIds.value = new Set(
+    [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== normalizedId),
+  );
+}
+
 function studentEvidenceRunning(student) {
-  return activeEvidenceSubmissionIds.value.has(student?.submission_id);
+  const submissionId = Number(student?.submission_id);
+  if (!Number.isFinite(submissionId)) return false;
+  return [...activeEvidenceSubmissionIds.value].some((id) => Number(id) === submissionId);
 }
 
 function studentEvidenceLowConfidenceCount(student) {
@@ -6865,6 +8459,7 @@ function studentEvidenceLowConfidenceCount(student) {
 }
 
 function studentEvidenceProgress(student) {
+  if (!evidenceExtractionStarted.value) return 0;
   const total = Number(taskQuestions.value.length || student?.questions?.length || 0);
   if (!total) return 0;
   return Math.min(100, Math.round((studentEvidenceCompletedQuestionCount(student) / total) * 100));
@@ -6878,7 +8473,8 @@ function evidenceQuestionSkipsExtraction(question) {
   return question?.extraction_status === "missing" || !String(question?.answer_text ?? "").trim();
 }
 
-function evidenceConfidenceMeta(confidence, skipped = false) {
+function evidenceConfidenceMeta(confidence, skipped = false, pending = false) {
+  if (pending) return { label: "待提取", type: "info" };
   if (skipped) return { label: "无需提取", type: "info" };
   if (confidence >= 0.9) return { label: `${formatPercent(confidence)} 高`, type: "success" };
   if (confidence >= 0.8) return { label: `${formatPercent(confidence)} 可用`, type: "primary" };
@@ -6889,6 +8485,131 @@ function evidenceConfidenceMeta(confidence, skipped = false) {
 function formatPercent(value) {
   const normalized = Number(value ?? 0);
   return `${Math.round(Math.max(0, Math.min(1, normalized)) * 100)}%`;
+}
+
+function plagiarismRiskMeta(riskLevel) {
+  const meta = {
+    high: { label: "高相似", type: "danger" },
+    medium: { label: "中相似", type: "warning" },
+    low: { label: "低相似", type: "info" },
+    none: { label: "无明显相似", type: "success" },
+  };
+  return meta[riskLevel] ?? meta.none;
+}
+
+function plagiarismCheckStatusMeta(status) {
+  const meta = {
+    pending: { label: "待运行", type: "info" },
+    running: { label: "运行中", type: "warning" },
+    completed: { label: "已完成", type: "success" },
+    failed: { label: "失败", type: "danger" },
+  };
+  return meta[status] ?? meta.pending;
+}
+
+function plagiarismAnswerText(submissionId, questionId) {
+  const student = (taskAnswerExtraction.value?.students ?? []).find(
+    (item) => Number(item.submission_id) === Number(submissionId),
+  );
+  const answer = (student?.answers ?? []).find(
+    (item) => Number(item.question_id) === Number(questionId),
+  );
+  return answer?.answer_text ?? "";
+}
+
+function plagiarismHighlightedParts(text, ranges) {
+  const display = normalizePlagiarismDisplayText(text);
+  const content = display.text;
+  if (!content) return [{ key: "empty", text: "暂无答案内容", highlight: false }];
+  const normalizedRanges = mergeTextRanges(
+    (ranges ?? []).map((range) => mapOriginalRangeToDisplayRange(range, display.indexMap, content.length)),
+    content.length,
+  );
+  if (!normalizedRanges.length) return [{ key: "all", text: content, highlight: false }];
+
+  const parts = [];
+  let cursor = 0;
+  normalizedRanges.forEach((range, index) => {
+    if (range.start > cursor) {
+      parts.push({
+        key: `plain-${index}-${cursor}`,
+        text: content.slice(cursor, range.start),
+        highlight: false,
+      });
+    }
+    parts.push({
+      key: `hit-${index}-${range.start}`,
+      text: content.slice(range.start, range.end),
+      highlight: true,
+    });
+    cursor = range.end;
+  });
+  if (cursor < content.length) {
+    parts.push({ key: `plain-tail-${cursor}`, text: content.slice(cursor), highlight: false });
+  }
+  return parts;
+}
+
+function normalizePlagiarismDisplayText(text) {
+  const original = String(text ?? "");
+  let normalized = "";
+  const indexMap = new Array(original.length + 1).fill(0);
+
+  for (let index = 0; index < original.length; index += 1) {
+    indexMap[index] = normalized.length;
+    const char = original[index];
+    const nextChar = original[index + 1];
+    if (char === "\r" && nextChar === "\n") {
+      normalized += " ";
+      indexMap[index + 1] = normalized.length - 1;
+      index += 1;
+    } else if (char === "\r" || char === "\n") {
+      normalized += " ";
+    } else {
+      normalized += char;
+    }
+  }
+  indexMap[original.length] = normalized.length;
+  return { text: normalized.trimEnd(), indexMap };
+}
+
+function mapOriginalRangeToDisplayRange(range, indexMap, maxLength) {
+  const originalStart = Math.max(0, Number(range.start ?? 0));
+  const originalEnd = Math.max(originalStart, Number(range.end ?? 0));
+  const start = Math.max(0, Math.min(maxLength, indexMap[originalStart] ?? 0));
+  const end = Math.max(start, Math.min(maxLength, indexMap[originalEnd] ?? maxLength));
+  return { start, end };
+}
+
+function mergeTextRanges(ranges, maxLength) {
+  const normalized = (ranges ?? [])
+    .map((range) => ({
+      start: Math.max(0, Math.min(maxLength, Number(range.start ?? 0))),
+      end: Math.max(0, Math.min(maxLength, Number(range.end ?? 0))),
+    }))
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => left.start - right.start);
+
+  const merged = [];
+  normalized.forEach((range) => {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  });
+  return merged;
+}
+
+function resolveAnswerHighlightContent(student) {
+  const directContent = String(student?.content ?? "").trim();
+  if (directContent) return student.content;
+
+  const sourceFile = selectedTaskFileGroup.value.student_submission?.find(
+    (file) => String(file.id) === String(student?.source_file_id),
+  );
+  return sourceFile?.parsed_text ?? student?.content ?? "";
 }
 
 function answerStudentKey(student) {
@@ -6988,76 +8709,6 @@ function updateAnswerStudentProgress(data, patch) {
   ).length;
 }
 
-function buildHighlightedSubmissionParts(student, answers) {
-  const content = student?.content ?? "";
-  if (!content) return [{ key: "empty", text: "暂无学生作业原文", questionId: null }];
-
-  const ranges = [];
-  answers.forEach((answer) => {
-    const answerText = String(answer.answer_text ?? "").trim();
-    if (!answerText) return;
-    const range = findAnswerTextRange(content, answerText);
-    if (!range) return;
-    ranges.push({
-      start: range.start,
-      end: range.end,
-      questionId: answer.question_id,
-      streaming: false,
-    });
-  });
-  ranges.sort((left, right) => left.start - right.start);
-
-  const parts = [];
-  let cursor = 0;
-  ranges.forEach((range, index) => {
-    if (range.start < cursor) return;
-    if (range.start > cursor) {
-      parts.push({ key: `text-${index}-${cursor}`, text: content.slice(cursor, range.start), questionId: null });
-    }
-    parts.push({
-      key: `answer-${range.questionId}-${range.start}`,
-      text: content.slice(range.start, range.end),
-      questionId: range.questionId,
-    });
-    cursor = range.end;
-  });
-  if (cursor < content.length) {
-    parts.push({ key: `text-tail-${cursor}`, text: content.slice(cursor), questionId: null });
-  }
-  return parts.length ? parts : [{ key: "all", text: content, questionId: null }];
-}
-
-function findAnswerTextRange(content, answerText) {
-  const exactIndex = content.indexOf(answerText);
-  if (exactIndex >= 0) {
-    return { start: exactIndex, end: exactIndex + answerText.length };
-  }
-
-  const normalizedNeedle = normalizeTextForRangeMatch(answerText);
-  if (!normalizedNeedle) return null;
-
-  let normalizedContent = "";
-  const indexMap = [];
-  Array.from(content).forEach((char, originalIndex) => {
-    if (/\s/.test(char)) return;
-    normalizedContent += char;
-    indexMap.push(originalIndex);
-  });
-
-  const normalizedIndex = normalizedContent.indexOf(normalizedNeedle);
-  if (normalizedIndex < 0) return null;
-
-  const start = indexMap[normalizedIndex];
-  const end = indexMap[normalizedIndex + normalizedNeedle.length - 1] + 1;
-  return { start, end };
-}
-
-function normalizeTextForRangeMatch(value) {
-  return Array.from(String(value ?? ""))
-    .filter((char) => !/\s/.test(char))
-    .join("");
-}
-
 async function handleTaskMaterialChange(material, uploadFile) {
   if (material.readOnly) return;
   if (!selectedTaskId.value) {
@@ -7093,21 +8744,23 @@ async function handleTaskMaterialChange(material, uploadFile) {
   }
 
   try {
-    const serverFile = await uploadTaskFile(taskId, material.role, rawFile);
+    const uploadResult = await uploadTaskFile(taskId, material.role, rawFile);
+    const uploadedFiles = (uploadResult.files ?? [uploadResult]).map((file) =>
+      normalizeTaskFile(file, material.role),
+    );
     const latestGroup = getTaskFileGroup(taskId);
-    const normalizedServerFile = normalizeTaskFile(serverFile, material.role);
     if (material.multiple) {
       setTaskFileGroup(taskId, {
         ...latestGroup,
         [material.role]: [
-          normalizedServerFile,
+          ...uploadedFiles,
           ...latestGroup[material.role].filter((file) => file.id !== localFile.id),
         ],
       });
     } else {
       setTaskFileGroup(taskId, {
         ...latestGroup,
-        [material.role]: [normalizedServerFile],
+        [material.role]: uploadedFiles.slice(0, 1),
       });
     }
     taskStore.updateTask(taskId, {
@@ -7116,7 +8769,7 @@ async function handleTaskMaterialChange(material, uploadFile) {
       progress: taskProgressForStage("analyze_questions"),
     });
     clearTaskStudentMatches(taskId);
-    ElMessage.success(`${material.title}已上传`);
+    ElMessage.success(uploadResult.message || `${material.title}已上传`);
   } catch {
     ElMessage.warning(`${material.title}已暂存在本地，后端上传失败`);
   } finally {

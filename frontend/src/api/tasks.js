@@ -57,6 +57,23 @@ export async function prepareTaskStudents(taskId) {
   return response.data;
 }
 
+export async function runTaskPlagiarismCheck(taskId) {
+  const response = await apiClient.post(`/tasks/${taskId}/plagiarism-check`, null, {
+    timeout: LONG_RUNNING_TASK_TIMEOUT,
+  });
+  return response.data;
+}
+
+export async function getTaskPlagiarismStudents(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/plagiarism-students`);
+  return response.data;
+}
+
+export async function getTaskPlagiarismStudentDetail(taskId, studentSubmissionId) {
+  const response = await apiClient.get(`/tasks/${taskId}/plagiarism-students/${studentSubmissionId}`);
+  return response.data;
+}
+
 export async function getTaskAnswerExtraction(taskId) {
   const response = await apiClient.get(`/tasks/${taskId}/extract-answers`);
   return response.data;
@@ -66,6 +83,16 @@ export async function startTaskAnswerExtraction(taskId, maxWorkers = 3, force = 
   const response = await apiClient.post(`/tasks/${taskId}/extract-answers`, null, {
     params: { max_workers: maxWorkers, force },
   });
+  return response.data;
+}
+
+export async function startTaskAnswerExtractionForSubmission(taskId, submissionId) {
+  const response = await apiClient.post(`/tasks/${taskId}/extract-answers/${submissionId}`);
+  return response.data;
+}
+
+export async function confirmTaskStudentAnswer(taskId, answerId) {
+  const response = await apiClient.post(`/tasks/${taskId}/student-answers/${answerId}/confirm`);
   return response.data;
 }
 
@@ -82,10 +109,32 @@ export async function startTaskEvidenceExtraction(taskId, maxWorkers = 3, force 
   return response.data;
 }
 
+export async function startTaskEvidenceExtractionForSubmission(taskId, submissionId) {
+  const response = await apiClient.post(`/tasks/${taskId}/extract-evidence/${submissionId}`);
+  return response.data;
+}
+
 export async function gradeTaskQuestion(taskId, payload) {
   const response = await apiClient.post(`/tasks/${taskId}/grade-by-question`, payload, {
     timeout: LONG_RUNNING_TASK_TIMEOUT,
   });
+  return response.data;
+}
+
+export async function getTaskAiGradingProgress(taskId) {
+  const response = await apiClient.get(`/tasks/${taskId}/grade-by-question`);
+  return response.data;
+}
+
+export async function startTaskAiGrading(taskId, maxWorkers = 2, force = false) {
+  const response = await apiClient.post(`/tasks/${taskId}/grade-by-question/start`, null, {
+    params: { max_workers: maxWorkers, force },
+  });
+  return response.data;
+}
+
+export async function startTaskAiGradingForSubmission(taskId, submissionId) {
+  const response = await apiClient.post(`/tasks/${taskId}/grade-by-question/${submissionId}`);
   return response.data;
 }
 

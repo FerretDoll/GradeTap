@@ -59,6 +59,15 @@ class EvidenceExtractionSnapshot(BaseModel):
     task_id: int
     status: str
     stage: str = "extract_evidence"
+    evidence_extraction_started: bool = False
     total_answers: int
     completed_answers: int
     students: list[StudentEvidenceExtractionProgress] = Field(default_factory=list)
+
+
+class EvidenceExtractionStudentStartResponse(BaseModel):
+    task_id: int
+    submission_id: int
+    status: str = "queued"
+    stage: str = "extract_evidence"
+    total_answers: int

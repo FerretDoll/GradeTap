@@ -191,7 +191,7 @@ def _build_workbook_bytes(
 
         row.extend(
             [
-                round(total_score, 2),
+                round(total_score),
                 "是" if teacher_modified else "否",
                 "是" if review_required else "否",
                 "、".join(sorted(set(filter(None, review_statuses)))),

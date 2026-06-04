@@ -44,6 +44,9 @@ class FileParseService:
             parsed_files: list[ParsedFileSummary] = []
             failed_files: list[dict] = []
             for uploaded_file in files:
+                suffix = Path(uploaded_file.storage_path).suffix.lower()
+                if suffix == ".zip":
+                    continue
                 try:
                     parsed_text = parse_document_text(Path(uploaded_file.storage_path))
                     uploaded_file.parsed_text = parsed_text

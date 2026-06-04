@@ -6,6 +6,7 @@ const LOCAL_TASKS_KEY = "gradetap.tasks";
 const TASK_PROGRESS_STAGES = [
   "prepare_students",
   "extract_answers",
+  "plagiarism_check",
   "extract_evidence",
   "grade_by_question",
   "teacher_review",

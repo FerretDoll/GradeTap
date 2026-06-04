@@ -19,9 +19,12 @@ from app.db.models import (
     GradingReflection,
     GradingResult,
     GradingTask,
+    PlagiarismCheck,
+    PlagiarismMatch,
     Question,
     QuestionRubric,
     StudentAnswer,
+    StudentPlagiarismSummary,
     StudentSubmission,
     TeacherRevision,
     UploadedFile,
@@ -103,6 +106,9 @@ class TaskService:
             db.execute(delete(AnswerGroup).where(AnswerGroup.task_id == task_id))
 
             db.execute(delete(StudentAnswer).where(StudentAnswer.task_id == task_id))
+            db.execute(delete(PlagiarismMatch).where(PlagiarismMatch.task_id == task_id))
+            db.execute(delete(StudentPlagiarismSummary).where(StudentPlagiarismSummary.task_id == task_id))
+            db.execute(delete(PlagiarismCheck).where(PlagiarismCheck.task_id == task_id))
             db.execute(delete(StudentSubmission).where(StudentSubmission.task_id == task_id))
 
             question_ids = select(Question.id).where(Question.task_id == task_id)

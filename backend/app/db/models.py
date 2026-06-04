@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.mysql import JSON
@@ -18,6 +19,7 @@ from app.db.session import Base
 from app.models.answer import AnswerExtractionStatus
 from app.models.file import FileRole
 from app.models.grading import GradingStatus, ReflectionStatus, ReviewPriority, ReviewStatus, SuggestedAction
+from app.models.plagiarism import PlagiarismCheckStatus, PlagiarismRiskLevel
 from app.models.question import DifficultyLevel, QuestionType
 from app.models.task import GradingTaskStatus
 
@@ -239,6 +241,61 @@ class StudentSubmission(TimestampMixin, Base):
     task: Mapped[GradingTask] = relationship(back_populates="submissions")
 
 
+class PlagiarismCheck(TimestampMixin, Base):
+    __tablename__ = "plagiarism_check"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), nullable=False)
+    status: Mapped[PlagiarismCheckStatus] = mapped_column(
+        Enum(PlagiarismCheckStatus, values_callable=enum_values),
+        default=PlagiarismCheckStatus.PENDING,
+        nullable=False,
+    )
+    algorithm: Mapped[str] = mapped_column(String(255), default="char_ngram_sequence_match", nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, default=0.2, nullable=False)
+    raw_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    finished_at: Mapped[DateTime | None] = mapped_column(DateTime, nullable=True)
+
+
+class StudentPlagiarismSummary(TimestampMixin, Base):
+    __tablename__ = "student_plagiarism_summary"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), nullable=False)
+    check_id: Mapped[int] = mapped_column(ForeignKey("plagiarism_check.id"), nullable=False)
+    student_submission_id: Mapped[int] = mapped_column(ForeignKey("student_submission.id"), nullable=False)
+    student_no: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    student_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    max_similarity_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    similar_students_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    risk_level: Mapped[PlagiarismRiskLevel] = mapped_column(
+        Enum(PlagiarismRiskLevel, values_callable=enum_values),
+        default=PlagiarismRiskLevel.NONE,
+        nullable=False,
+    )
+    top_match_submission_id: Mapped[int | None] = mapped_column(ForeignKey("student_submission.id"), nullable=True)
+
+
+class PlagiarismMatch(TimestampMixin, Base):
+    __tablename__ = "plagiarism_match"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), nullable=False)
+    check_id: Mapped[int] = mapped_column(ForeignKey("plagiarism_check.id"), nullable=False)
+    student_a_submission_id: Mapped[int] = mapped_column(ForeignKey("student_submission.id"), nullable=False)
+    student_b_submission_id: Mapped[int] = mapped_column(ForeignKey("student_submission.id"), nullable=False)
+    similarity_score: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    risk_level: Mapped[PlagiarismRiskLevel] = mapped_column(
+        Enum(PlagiarismRiskLevel, values_callable=enum_values),
+        default=PlagiarismRiskLevel.NONE,
+        nullable=False,
+    )
+    matched_segments: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    evidence_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    raw_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
 class StudentAnswer(TimestampMixin, Base):
     __tablename__ = "student_answer"
 
@@ -307,6 +364,21 @@ class GradingResult(TimestampMixin, Base):
     review_priority: Mapped[ReviewPriority] = mapped_column(Enum(ReviewPriority, values_callable=enum_values), nullable=False)
     review_status: Mapped[ReviewStatus] = mapped_column(Enum(ReviewStatus, values_callable=enum_values), nullable=False)
     raw_llm_output: Mapped[dict | str | None] = mapped_column(JSON, nullable=True)
+
+
+class GradingCache(TimestampMixin, Base):
+    __tablename__ = "grading_cache"
+    __table_args__ = (
+        UniqueConstraint("cache_key", name="uq_grading_cache_cache_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cache_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    rubric_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    answer_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=False)
 
 
 class GradingDeduction(TimestampMixin, Base):

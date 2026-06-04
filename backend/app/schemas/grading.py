@@ -100,6 +100,14 @@ class GradeByQuestionResponse(BaseModel):
     grading_results: list[GradingResultRead] = Field(default_factory=list)
 
 
+class GradeByQuestionStudentStartResponse(BaseModel):
+    task_id: int
+    submission_id: int
+    status: str = "queued"
+    stage: str = "grade_by_question"
+    total_questions: int
+
+
 class GradingReflectionBase(BaseModel):
     reflection_status: ReflectionStatus
     issues: list[str] = Field(default_factory=list)
