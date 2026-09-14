@@ -7,7 +7,6 @@ import threading
 from typing import Any
 
 from fastapi import HTTPException
-from pydantic import ValidationError
 from sqlalchemy import delete, select
 
 from app.db.models import (
@@ -90,22 +89,44 @@ class AnswerExtractorService:
         else:
             payload = self._llm.chat_json(prompt, schema=ANSWER_EXTRACTOR_OUTPUT_SCHEMA)
         question_by_number = {question.question_number: question for question in questions}
-        answers: list[StudentAnswerCreate] = []
+        answer_by_question_id: dict[int, StudentAnswerCreate] = {}
         for item in payload.get("answers", []):
             question = question_by_number.get(item.get("question_number"))
             if question is None:
                 continue
             answer_text, extraction_status, confidence = self._normalize_extraction_item(question, item)
+            answer_by_question_id[question.id] = StudentAnswerCreate(
+                task_id=task_id,
+                question_id=question.id,
+                student_submission_id=student_submission_id,
+                answer_text=answer_text,
+                extraction_status=extraction_status,
+                confidence=confidence,
+                raw_llm_output=json.dumps(item, ensure_ascii=False),
+            )
+
+        answers: list[StudentAnswerCreate] = []
+        for question in questions:
+            answer = answer_by_question_id.get(question.id)
+            if answer is not None:
+                answers.append(answer)
+                continue
             answers.append(
                 StudentAnswerCreate(
                     task_id=task_id,
                     question_id=question.id,
                     student_submission_id=student_submission_id,
-                    answer_text=answer_text,
-                    extraction_status=extraction_status,
-                    confidence=confidence,
-                    raw_llm_output=json.dumps(item, ensure_ascii=False),
-                )
+                    answer_text="",
+                    extraction_status=AnswerExtractionStatus.MISSING,
+                    confidence=0,
+                    raw_llm_output=json.dumps(
+                        {
+                            "source": "system_missing_from_llm_output",
+                            "question_number": question.question_number,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
             )
         return answers
 
@@ -270,12 +291,24 @@ class AnswerExtractorService:
             submissions = db.scalars(
                 select(StudentSubmission)
                 .where(StudentSubmission.task_id == task_id)
-                .order_by(StudentSubmission.id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                ),
             ).all()
             answers = db.scalars(
                 select(StudentAnswer)
+                .join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
                 .where(StudentAnswer.task_id == task_id)
-                .order_by(StudentAnswer.student_submission_id, StudentAnswer.question_id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                    StudentAnswer.question_id,
+                ),
             ).all()
             files = {
                 uploaded_file.id: uploaded_file
@@ -291,20 +324,26 @@ class AnswerExtractorService:
                 )
 
             total_questions = len(questions)
+            question_ids = {question.id for question in questions}
             students: list[StudentAnswerExtractionProgress] = []
             for submission in submissions:
                 student_answers = answers_by_submission.get(submission.id, [])
-                completed_questions = len(
-                    [
-                        answer
-                        for answer in student_answers
-                        if answer.extraction_status != AnswerExtractionStatus.EXTRACT_ERROR
-                    ],
+                completed_question_ids = {
+                    answer.question_id
+                    for answer in student_answers
+                    if answer.question_id in question_ids
+                    and answer.extraction_status != AnswerExtractionStatus.EXTRACT_ERROR
+                }
+                completed_questions = len(completed_question_ids)
+                has_extract_error = any(
+                    answer.question_id in question_ids
+                    and answer.extraction_status == AnswerExtractionStatus.EXTRACT_ERROR
+                    for answer in student_answers
                 )
-                if total_questions and completed_questions >= total_questions:
+                if has_extract_error:
+                    status = "failed"
+                elif total_questions and completed_questions >= total_questions:
                     status = "done"
-                elif completed_questions > 0:
-                    status = "processing"
                 else:
                     status = "pending"
                 source_file = files.get(submission.source_file_id or 0)
@@ -335,6 +374,7 @@ class AnswerExtractorService:
 
     def _run_extract_answers_job(self, task_id: int, max_workers: int, force: bool) -> None:
         progress_channel = f"task:{task_id}"
+        max_attempts = 3
         try:
             with SessionLocal() as db:
                 task = db.get(GradingTask, task_id)
@@ -354,71 +394,137 @@ class AnswerExtractorService:
                 submissions = db.scalars(
                     select(StudentSubmission)
                     .where(StudentSubmission.task_id == task_id)
-                    .order_by(StudentSubmission.id),
+                    .order_by(
+                        StudentSubmission.student_no == "",
+                        StudentSubmission.student_no,
+                        StudentSubmission.student_name,
+                        StudentSubmission.id,
+                    ),
                 ).all()
                 if force:
                     self._clear_after_answer_extraction(db, task_id)
-                    submissions_to_process = submissions
-                else:
-                    submissions_to_process = self._submissions_needing_extraction(db, task_id, submissions, len(questions))
                 db.commit()
 
-            self._publish(
-                progress_channel,
-                "stage_started",
-                {
-                    "stage": "extract_answers",
-                    "total_students": len(submissions_to_process),
-                    "total_questions": len(questions),
-                    "max_workers": max_workers,
-                    "force": force,
-                },
-            )
-            completed_students = 0
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
-                    executor.submit(
-                        self._extract_one_submission,
+            total_students_to_process = 0
+            processed_students = 0
+            last_completed_students = -1
+            for attempt in range(1, max_attempts + 1):
+                with SessionLocal() as db:
+                    submissions = db.scalars(
+                        select(StudentSubmission)
+                        .where(StudentSubmission.task_id == task_id)
+                        .order_by(
+                            StudentSubmission.student_no == "",
+                            StudentSubmission.student_no,
+                            StudentSubmission.student_name,
+                            StudentSubmission.id,
+                        ),
+                    ).all()
+                    submissions_to_process = self._submissions_needing_extraction(
+                        db,
                         task_id,
-                        submission.id,
-                        submission.student_name,
-                        submission.student_no,
-                        submission.content,
-                        questions,
-                        progress_channel,
-                    )
-                    for submission in submissions_to_process
-                ]
-                for future in as_completed(futures):
-                    completed_students += 1
-                    try:
-                        future.result()
-                    except Exception:
-                        pass
-                    self._publish(
-                        progress_channel,
-                        "student_batch_progress",
-                        {
-                            "stage": "extract_answers",
-                            "completed_students": completed_students,
-                            "total_students": len(submissions_to_process),
-                        },
+                        submissions,
+                        [question.id for question in questions],
                     )
 
-            with SessionLocal() as db:
-                task = db.get(GradingTask, task_id)
-                if task is not None:
-                    task.status = GradingTaskStatus.ANSWERS_EXTRACTED
-                    db.commit()
-            self._publish(
-                progress_channel,
-                "stage_done",
-                {
-                    "stage": "extract_answers",
-                    "student_count": len(submissions_to_process),
-                    "question_count": len(questions),
-                },
-            )
+                if not submissions_to_process:
+                    break
+                total_students_to_process = max(total_students_to_process, len(submissions_to_process))
+                self._publish(
+                    progress_channel,
+                    "stage_started",
+                    {
+                        "stage": "extract_answers",
+                        "total_students": len(submissions_to_process),
+                        "total_questions": len(questions),
+                        "max_workers": max_workers,
+                        "force": force,
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                    },
+                )
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            self._extract_one_submission,
+                            task_id,
+                            submission.id,
+                            submission.student_name,
+                            submission.student_no,
+                            submission.content,
+                            questions,
+                            progress_channel,
+                        ): submission
+                        for submission in submissions_to_process
+                    }
+                    for future in as_completed(futures):
+                        submission = futures[future]
+                        processed_students += 1
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            self._record_submission_extract_failure(
+                                task_id=task_id,
+                                submission_id=submission.id,
+                                student_name=submission.student_name,
+                                student_no=submission.student_no,
+                                questions=questions,
+                                progress_channel=progress_channel,
+                                exc=exc,
+                            )
+                        self._publish(
+                            progress_channel,
+                            "student_batch_progress",
+                            {
+                                "stage": "extract_answers",
+                                "completed_students": processed_students,
+                                "total_students": total_students_to_process,
+                                "attempt": attempt,
+                            },
+                        )
+
+                snapshot_after_attempt = self.get_snapshot(task_id)
+                if snapshot_after_attempt.completed_students >= snapshot_after_attempt.total_students:
+                    break
+                if snapshot_after_attempt.completed_students <= last_completed_students:
+                    break
+                last_completed_students = snapshot_after_attempt.completed_students
+
+            snapshot = self.get_snapshot(task_id)
+            if snapshot.completed_students <= 0:
+                self._publish(
+                    progress_channel,
+                    "stage_failed",
+                    {
+                        "stage": "extract_answers",
+                        "student_count": total_students_to_process,
+                        "question_count": len(questions),
+                        "completed_students": snapshot.completed_students,
+                        "total_students": snapshot.total_students,
+                        "message": "本轮答案抽取没有完成任何学生，请检查模型配置或学生作业内容后重试",
+                    },
+                )
+            else:
+                is_partial = snapshot.completed_students < snapshot.total_students
+                with SessionLocal() as db:
+                    task = db.get(GradingTask, task_id)
+                    if task is not None:
+                        task.status = GradingTaskStatus.ANSWERS_EXTRACTED
+                        db.commit()
+                self._publish(
+                    progress_channel,
+                    "stage_done",
+                    {
+                        "stage": "extract_answers",
+                        "student_count": total_students_to_process,
+                        "question_count": len(questions),
+                        "completed_students": snapshot.completed_students,
+                        "total_students": snapshot.total_students,
+                        "partial": is_partial,
+                        "remaining_students": max(0, snapshot.total_students - snapshot.completed_students),
+                    },
+                )
         finally:
             with self._running_lock:
                 self._running_task_ids.discard(task_id)
@@ -527,36 +633,62 @@ class AnswerExtractorService:
                     "completed_questions": len(answers),
                 },
             )
-        except (RuntimeError, ValueError, ValidationError) as exc:
-            with SessionLocal() as db:
-                db.add_all(
-                    [
-                        StudentAnswer(
-                            task_id=task_id,
-                            question_id=question.id,
-                            student_submission_id=submission_id,
-                            answer_text="",
-                            extraction_status=AnswerExtractionStatus.EXTRACT_ERROR,
-                            confidence=0,
-                            raw_llm_output=str(exc),
-                        )
-                        for question in questions
-                    ],
-                )
-                db.commit()
-            self._publish(
-                progress_channel,
-                "student_failed",
-                {
-                    "stage": "extract_answers",
-                    "submission_id": submission_id,
-                    "student_name": student_name,
-                    "student_no": student_no,
-                    "total_questions": len(questions),
-                    "completed_questions": 0,
-                    "message": str(exc),
-                },
+        except Exception as exc:
+            self._record_submission_extract_failure(
+                task_id=task_id,
+                submission_id=submission_id,
+                student_name=student_name,
+                student_no=student_no,
+                questions=questions,
+                progress_channel=progress_channel,
+                exc=exc,
             )
+
+    def _record_submission_extract_failure(
+        self,
+        task_id: int,
+        submission_id: int,
+        student_name: str,
+        student_no: str,
+        questions: list[QuestionRead],
+        progress_channel: str,
+        exc: Exception,
+    ) -> None:
+        with SessionLocal() as db:
+            db.execute(
+                delete(StudentAnswer).where(
+                    StudentAnswer.task_id == task_id,
+                    StudentAnswer.student_submission_id == submission_id,
+                ),
+            )
+            db.add_all(
+                [
+                    StudentAnswer(
+                        task_id=task_id,
+                        question_id=question.id,
+                        student_submission_id=submission_id,
+                        answer_text="",
+                        extraction_status=AnswerExtractionStatus.EXTRACT_ERROR,
+                        confidence=0,
+                        raw_llm_output=str(exc),
+                    )
+                    for question in questions
+                ],
+            )
+            db.commit()
+        self._publish(
+            progress_channel,
+            "student_failed",
+            {
+                "stage": "extract_answers",
+                "submission_id": submission_id,
+                "student_name": student_name,
+                "student_no": student_no,
+                "total_questions": len(questions),
+                "completed_questions": 0,
+                "message": str(exc),
+            },
+        )
 
     def _build_delta_handler(
         self,
@@ -638,7 +770,12 @@ class AnswerExtractorService:
         students = db.scalars(
             select(ClassStudent)
             .where(ClassStudent.class_group_id == class_group.id)
-            .order_by(ClassStudent.id),
+            .order_by(
+                ClassStudent.student_no == "",
+                ClassStudent.student_no,
+                ClassStudent.student_name,
+                ClassStudent.id,
+            ),
         ).all()
         files = db.scalars(
             select(UploadedFile)
@@ -724,9 +861,10 @@ class AnswerExtractorService:
         db,
         task_id: int,
         submissions: list[StudentSubmission],
-        question_count: int,
+        question_ids: list[int],
     ) -> list[StudentSubmission]:
-        if question_count <= 0:
+        required_question_ids = set(question_ids)
+        if not required_question_ids:
             return submissions
         answers = db.scalars(select(StudentAnswer).where(StudentAnswer.task_id == task_id)).all()
         answers_by_submission: dict[int, list[StudentAnswer]] = {}
@@ -735,13 +873,26 @@ class AnswerExtractorService:
         return [
             submission
             for submission in submissions
-            if self._submission_needs_extraction(answers_by_submission.get(submission.id, []), question_count)
+            if self._submission_needs_extraction(
+                answers_by_submission.get(submission.id, []),
+                required_question_ids,
+            )
         ]
 
-    def _submission_needs_extraction(self, answers: list[StudentAnswer], question_count: int) -> bool:
-        if len(answers) < question_count:
+    def _submission_needs_extraction(self, answers: list[StudentAnswer], required_question_ids: set[int]) -> bool:
+        completed_question_ids = {
+            answer.question_id
+            for answer in answers
+            if answer.question_id in required_question_ids
+            and answer.extraction_status != AnswerExtractionStatus.EXTRACT_ERROR
+        }
+        if completed_question_ids != required_question_ids:
             return True
-        return any(answer.extraction_status == AnswerExtractionStatus.EXTRACT_ERROR for answer in answers)
+        return any(
+            answer.extraction_status == AnswerExtractionStatus.EXTRACT_ERROR
+            for answer in answers
+            if answer.question_id in required_question_ids
+        )
 
     def _ensure_task_questions(self, db, task: GradingTask) -> None:
         existing_question = db.scalars(

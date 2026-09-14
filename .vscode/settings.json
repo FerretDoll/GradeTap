@@ -1,0 +1,5 @@
+{
+  "npm.autoDetect": "off",
+  "npm.packageManager": "pnpm",
+  "npm.scriptRunner": "pnpm"
+}

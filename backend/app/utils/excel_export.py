@@ -39,7 +39,12 @@ def export_grades_to_excel(task_id: int, teacher_revisions: list[ExportTeacherRe
         submissions = db.scalars(
             select(StudentSubmission)
             .where(StudentSubmission.task_id == task_id)
-            .order_by(StudentSubmission.student_no, StudentSubmission.student_name, StudentSubmission.id),
+            .order_by(
+                StudentSubmission.student_no == "",
+                StudentSubmission.student_no,
+                StudentSubmission.student_name,
+                StudentSubmission.id,
+            ),
         ).all()
         results = db.scalars(
             select(GradingResult)

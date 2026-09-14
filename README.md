@@ -122,38 +122,71 @@ GradeTap/
   大模型自动批改作业网站_架构设计.md
 ```
 
-## 后端启动
+## 一键启动（推荐）
 
-建议使用 Python 3.10+。
+首次使用前，请先完成依赖安装：
 
-```powershell
+```bash
+# 后端
 cd backend
 conda create -n gradetap python=3.12
 conda activate gradetap
 pip install -r requirements.txt
+
+# 前端
+cd ../frontend
+corepack pnpm install
+```
+
+之后在项目根目录执行以下任一命令，即可同时启动前后端：
+
+```bash
+# 方式 1：根目录 npm script
+corepack pnpm run dev
+
+# 方式 2：脚本（macOS / Linux）
+./scripts/start-dev.sh
+
+# 方式 3：脚本（Windows PowerShell）
+.\scripts\start-dev.ps1
+```
+
+启动后默认地址：
+
+```text
+前端: http://127.0.0.1:5173
+后端: http://127.0.0.1:8000
+```
+
+按 `Ctrl+C` 会同时停止前后端服务。
+
+Python 环境查找顺序：
+
+1. 环境变量 `GRADETAP_PYTHON`（手动指定 Python 路径）
+2. 当前已激活的 conda 环境（`CONDA_PREFIX`）
+3. 项目根目录 `.conda/` 本地环境
+4. `environment.yml` 中声明的 conda 环境（默认 `gradetap`）
+5. 系统 `python3`（Windows 为 `python`）
+
+也可通过 `GRADETAP_CONDA_ENV=其他环境名` 指定 conda 环境名。
+
+## 分别启动
+
+如需单独调试，也可以分开启动。
+
+后端（建议使用 Python 3.10+）：
+
+```powershell
+cd backend
+conda activate gradetap
 uvicorn app.main:app --reload
 ```
 
-默认服务地址：
-
-```text
-http://127.0.0.1:8000
-```
-
-## 前端启动
-
-项目当前使用 `pnpm`。
+前端：
 
 ```powershell
 cd frontend
-corepack pnpm install
 corepack pnpm run dev
-```
-
-默认服务地址：
-
-```text
-http://127.0.0.1:5173
 ```
 
 ## DeepSeek API Key 获取与配置

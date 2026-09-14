@@ -76,7 +76,12 @@ class ClassGroupService:
             students = db.scalars(
                 select(ClassStudent)
                 .where(ClassStudent.class_group_id == class_group_id)
-                .order_by(ClassStudent.id.desc()),
+                .order_by(
+                    ClassStudent.student_no == "",
+                    ClassStudent.student_no,
+                    ClassStudent.student_name,
+                    ClassStudent.id,
+                ),
             ).all()
             return [self._to_student_schema(student) for student in students]
 

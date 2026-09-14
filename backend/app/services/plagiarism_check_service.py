@@ -16,6 +16,7 @@ from app.db.models import (
     StudentSubmission,
 )
 from app.db.session import Base, SessionLocal, engine
+from app.models.answer import AnswerExtractionStatus
 from app.models.plagiarism import PlagiarismCheckStatus, PlagiarismRiskLevel
 from app.schemas.plagiarism import (
     PlagiarismCheckRead,
@@ -45,7 +46,12 @@ class PlagiarismCheckService:
             submissions = db.scalars(
                 select(StudentSubmission)
                 .where(StudentSubmission.task_id == task_id)
-                .order_by(StudentSubmission.id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                ),
             ).all()
             if not submissions:
                 raise HTTPException(status_code=400, detail="请先完成学生解析，再运行查重测试")
@@ -83,6 +89,9 @@ class PlagiarismCheckService:
                 }
                 if not answers_by_submission_question:
                     raise HTTPException(status_code=400, detail="请先完成答案抽取，再运行作业查重")
+                submissions = self._eligible_submissions_for_check(submissions, questions, answers)
+                if not submissions:
+                    raise HTTPException(status_code=400, detail="暂无已完成答案抽取的学生，无法运行作业查重")
 
                 pair_results: list[PlagiarismMatch] = []
                 for left_index, left in enumerate(submissions):
@@ -234,6 +243,40 @@ class PlagiarismCheckService:
             .where(PlagiarismCheck.task_id == task_id)
             .order_by(desc(PlagiarismCheck.id)),
         ).first()
+
+    def _eligible_submissions_for_check(
+        self,
+        submissions: list[StudentSubmission],
+        questions: list[Question],
+        answers: list[StudentAnswer],
+    ) -> list[StudentSubmission]:
+        question_ids = {question.id for question in questions}
+        if not question_ids:
+            return []
+
+        answers_by_submission: dict[int, list[StudentAnswer]] = {}
+        for answer in answers:
+            if answer.question_id not in question_ids:
+                continue
+            answers_by_submission.setdefault(answer.student_submission_id, []).append(answer)
+
+        eligible_submission_ids = set()
+        for submission_id, submission_answers in answers_by_submission.items():
+            has_extract_error = any(
+                answer.extraction_status == AnswerExtractionStatus.EXTRACT_ERROR
+                for answer in submission_answers
+            )
+            if has_extract_error:
+                continue
+            completed_question_ids = {
+                answer.question_id
+                for answer in submission_answers
+                if answer.extraction_status != AnswerExtractionStatus.EXTRACT_ERROR
+            }
+            if completed_question_ids == question_ids:
+                eligible_submission_ids.add(submission_id)
+
+        return [submission for submission in submissions if submission.id in eligible_submission_ids]
 
     def _normalize(self, value: str) -> NormalizedText:
         chars: list[str] = []

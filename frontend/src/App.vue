@@ -352,7 +352,7 @@
                           <el-button
                             size="small"
                             type="primary"
-                            :disabled="!answerExtractionHasAnswers"
+                            :disabled="!answerExtractionHasCompletedStudents"
                             :loading="plagiarismCheckLoading"
                             @click="runPlagiarismCheck"
                           >
@@ -363,7 +363,7 @@
                           <el-button
                             size="small"
                             type="primary"
-                            :disabled="!uploadedStudentSubmissionFileCount"
+                            :disabled="!uploadedStudentSubmissionFileCount || answerReExtractionBusy"
                             :loading="answerExtractionLoading"
                             @click="runAnswerExtraction(false)"
                           >
@@ -373,7 +373,7 @@
                             v-if="answerExtractionHasAnswers"
                             size="small"
                             type="warning"
-                            :disabled="!uploadedStudentSubmissionFileCount"
+                            :disabled="!uploadedStudentSubmissionFileCount || answerReExtractionBusy"
                             :loading="answerExtractionLoading"
                             @click="runAnswerExtraction(true)"
                           >
@@ -384,7 +384,7 @@
                           <el-button
                             size="small"
                             type="primary"
-                            :disabled="!answerExtractionHasAnswers"
+                            :disabled="!answerExtractionHasCompletedStudents"
                             :loading="evidenceExtractionLoading"
                             @click="runEvidenceExtraction(false)"
                           >
@@ -394,7 +394,7 @@
                             v-if="evidenceExtractionHasEvidence"
                             size="small"
                             type="warning"
-                            :disabled="!answerExtractionHasAnswers"
+                            :disabled="!answerExtractionHasCompletedStudents"
                             :loading="evidenceExtractionLoading"
                             @click="runEvidenceExtraction(true)"
                           >
@@ -438,6 +438,8 @@
                           <el-button
                             size="small"
                             type="success"
+                            class="teacher-review-stable-confirm-button"
+                            :class="{ 'is-confirmed-pulse': stableTeacherReviewConfirmAnimating }"
                             :disabled="!teacherReviewPendingStableItems.length || confirmingStableTeacherReview"
                             :loading="confirmingStableTeacherReview"
                             @click="confirmStableTeacherReviewItems"
@@ -577,7 +579,7 @@
                               type="button"
                               class="plagiarism-student-card"
                               :class="{
-                                active: student.student_submission_id === selectedPlagiarismSubmissionId,
+                                active: String(student.student_submission_id) === String(selectedPlagiarismSubmissionId),
                                 risk: student.risk_level !== 'none',
                               }"
                               @click="selectPlagiarismStudent(student.student_submission_id)"
@@ -745,8 +747,8 @@
                                 circle
                                 text
                                 title="重新抽取该学生"
-                                :loading="reExtractingAnswerSubmissionId === selectedAnswerStudent.submission_id"
-                                :disabled="answerExtractionLoading || !selectedAnswerStudent"
+                                :loading="answerReExtractionIsActive(selectedAnswerStudent.submission_id)"
+                                :disabled="answerExtractionLoading || !selectedAnswerStudent || answerReExtractionIsQueued(selectedAnswerStudent.submission_id)"
                                 @click.stop="runSingleStudentAnswerExtraction(selectedAnswerStudent)"
                               />
                             </div>
@@ -809,11 +811,12 @@
                           <div class="answer-source-text">
                             <template v-for="part in highlightedSubmissionParts" :key="part.key">
                               <mark
-                                v-if="part.questionId"
+                                v-if="part.questionIds?.length"
                                 class="answer-highlight"
                                 :data-source-question-id="part.questionId"
+                                :data-source-question-ids="part.questionIds.join(',')"
                                 :class="{
-                                  active: part.questionId === activeAnswerQuestionId,
+                                  active: part.questionIds.map(String).includes(String(activeAnswerQuestionId)),
                                 }"
                                 role="button"
                                 tabindex="0"
@@ -858,16 +861,10 @@
                                 <span>{{ student.student_no || "未填写学号" }}</span>
                               </div>
                               <el-tag
-                                :type="!evidenceExtractionStarted ? 'info' : studentEvidenceLowConfidenceCount(student) ? 'warning' : 'success'"
+                                :type="studentEvidenceStatusMeta(student).type"
                                 effect="light"
                               >
-                                {{
-                                  !evidenceExtractionStarted
-                                    ? "待提取"
-                                    : studentEvidenceLowConfidenceCount(student)
-                                      ? "需复核"
-                                      : "稳定"
-                                }}
+                                {{ studentEvidenceStatusMeta(student).label }}
                               </el-tag>
                             </div>
                             <div class="evidence-student-counts">
@@ -996,7 +993,7 @@
                       <el-empty
                         v-else
                         class="student-parse-empty"
-                        description="请先完成答案抽取，再进入证据提取"
+                        description="至少完成 1 名学生的答案抽取后，可进入证据提取"
                         :image-size="72"
                       />
                     </div>
@@ -1403,10 +1400,10 @@
                                 <strong>最终 {{ formatScore(teacherReviewFinalScore(questionItem)) }}</strong>
                                 <small>/ {{ questionMaxScore(questionItem.question_id) }} 分</small>
                                 <el-tag
-                                  :type="gradingStatusMeta(questionItem.grading_result?.grading_status).type"
+                                  :type="finalScoreGradingStatusMeta(questionItem).type"
                                   effect="light"
                                 >
-                                  {{ gradingStatusMeta(questionItem.grading_result?.grading_status).label }}
+                                  {{ finalScoreGradingStatusMeta(questionItem).label }}
                                 </el-tag>
                               </div>
                             </article>
@@ -2000,7 +1997,18 @@
                                 >
                                   <div class="assignment-rubric-title">
                                     <strong>{{ question.question_number }}. {{ question.content }}</strong>
-                                    <el-tag effect="plain">{{ question.total_score }} 分</el-tag>
+                                    <div class="assignment-rubric-title-actions">
+                                      <el-tag effect="plain">{{ question.total_score }} 分</el-tag>
+                                      <el-tooltip content="编辑这道题的评分量规" placement="top">
+                                        <el-button
+                                          :icon="Edit"
+                                          size="small"
+                                          circle
+                                          :disabled="!(question.rubrics ?? []).length"
+                                          @click="openAssignmentRubricEditor(question)"
+                                        />
+                                      </el-tooltip>
+                                    </div>
                                   </div>
                                   <el-table
                                     :data="question.rubrics ?? []"
@@ -2516,6 +2524,87 @@
   </el-dialog>
 
   <el-dialog
+    v-model="rubricEditorVisible"
+    :title="rubricEditorDraft.question_number ? `${rubricEditorDraft.question_number} · 编辑评分量规` : '编辑评分量规'"
+    width="min(1040px, 94vw)"
+    :lock-scroll="false"
+    class="rubric-editor-dialog"
+  >
+    <el-form :model="rubricEditorDraft" label-position="top" class="rubric-editor-card">
+        <div class="form-grid">
+          <el-form-item label="题号">
+            <el-input v-model="rubricEditorDraft.question_number" />
+          </el-form-item>
+          <el-form-item label="题目分值">
+            <div class="rubric-editor-score-display">
+              <strong>{{ formatScore(rubricEditorScoreTotal) }}</strong>
+            </div>
+          </el-form-item>
+        </div>
+        <el-form-item label="题目内容">
+          <el-input v-model="rubricEditorDraft.content" type="textarea" :rows="3" />
+        </el-form-item>
+
+      <div class="rubric-editor-toolbar">
+        <div>
+          <span>维度合计</span>
+          <strong>{{ formatScore(rubricEditorScoreTotal) }} 分</strong>
+        </div>
+        <el-button size="small" type="primary" :icon="Plus" @click="addRubricEditorDimension">
+          新增维度
+        </el-button>
+      </div>
+
+      <div ref="rubricEditorDimensionListRef" class="rubric-editor-dimension-list">
+        <section
+          v-for="(rubric, index) in rubricEditorDraft.rubrics"
+          :key="rubric.id ?? `draft-rubric-${index}`"
+          class="rubric-editor-dimension"
+        >
+          <div class="rubric-editor-dimension-heading">
+            <strong>评分维度 {{ index + 1 }}</strong>
+            <el-button
+              :icon="Delete"
+              size="small"
+              circle
+              :disabled="rubricEditorDraft.rubrics.length <= 1"
+              @click="removeRubricEditorDimension(index)"
+            />
+          </div>
+          <div class="form-grid">
+            <el-form-item label="维度名称">
+              <el-input v-model="rubric.dimension_name" placeholder="例如：语法正确性" />
+            </el-form-item>
+            <el-form-item label="维度分值">
+              <el-input-number v-model="rubric.max_score" :min="0" :max="1000" class="form-control" />
+            </el-form-item>
+          </div>
+          <el-form-item label="维度说明">
+            <el-input v-model="rubric.dimension_description" type="textarea" :rows="2" placeholder="说明该维度考查什么。" />
+          </el-form-item>
+          <div class="rubric-editor-text-grid">
+            <el-form-item label="得分条件">
+              <el-input v-model="rubric.scoring_criteria" type="textarea" :rows="3" />
+            </el-form-item>
+            <el-form-item label="扣分条件">
+              <el-input v-model="rubric.deduction_criteria" type="textarea" :rows="3" />
+            </el-form-item>
+            <el-form-item label="证据要求">
+              <el-input v-model="rubric.evidence_requirement" type="textarea" :rows="3" />
+            </el-form-item>
+          </div>
+        </section>
+      </div>
+    </el-form>
+    <template #footer>
+      <el-button @click="rubricEditorVisible = false">取消</el-button>
+      <el-button type="primary" :icon="Check" @click="saveAssignmentRubricEditor">
+        保存量规
+      </el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog
     v-model="parsedPreviewVisible"
     :title="parsedPreviewFile ? `${parsedPreviewFile.file_name} · 解析文本` : '解析文本'"
     width="min(1080px, 92vw)"
@@ -2724,6 +2813,8 @@ const activeView = ref("tasks");
 const sidebarCollapsed = ref(false);
 const selectedTaskId = ref(null);
 const AI_GRADING_BATCH_SIZE = 5;
+const ANSWER_REEXTRACT_CONCURRENCY = 3;
+const ANSWER_REEXTRACT_QUEUE_LIMIT = 20;
 const DESCRIPTION_LIST_LIMIT = 28;
 const DESCRIPTION_DETAIL_LIMIT = 46;
 const taskMaterialsCollapsed = ref(false);
@@ -2744,6 +2835,9 @@ const classDialogVisible = ref(false);
 const courseDialogVisible = ref(false);
 const assignmentDialogVisible = ref(false);
 const studentDialogVisible = ref(false);
+const rubricEditorVisible = ref(false);
+const rubricEditorOriginalKey = ref("");
+const rubricEditorDimensionListRef = ref(null);
 const parsedPreviewVisible = ref(false);
 const parsedPreviewFile = ref(null);
 const answerQuestionListRef = ref(null);
@@ -2769,7 +2863,8 @@ const parseFilesLoading = ref(false);
 const studentPrepareLoading = ref(false);
 const plagiarismCheckLoading = ref(false);
 const answerExtractionLoading = ref(false);
-const reExtractingAnswerSubmissionId = ref(null);
+const activeAnswerReExtractionSubmissionIds = ref(new Set());
+const queuedAnswerReExtractionStudents = ref([]);
 const confirmingAnswerId = ref(null);
 const evidenceExtractionLoading = ref(false);
 const reExtractingEvidenceSubmissionId = ref(null);
@@ -2828,6 +2923,19 @@ const studentForm = reactive({
   student_no: "",
 });
 
+const rubricEditorDraft = reactive({
+  id: null,
+  question_number: "",
+  content: "",
+  total_score: 0,
+  question_type: "",
+  knowledge_points: [],
+  difficulty: "",
+  expected_answer_type: "",
+  sort_order: 0,
+  rubrics: [],
+});
+
 const llmForm = reactive({
   enabled: false,
   provider: "deepseek",
@@ -2877,6 +2985,7 @@ const selectedTeacherReviewQuestionId = ref(null);
 const teacherReviewFilter = ref("all");
 const exportResultsLoading = ref(false);
 const confirmingStableTeacherReview = ref(false);
+const stableTeacherReviewConfirmAnimating = ref(false);
 const teacherReviewDraft = reactive({
   final_score: 0,
   review_status: "teacher_confirmed",
@@ -2886,6 +2995,7 @@ const teacherReviewDraft = reactive({
 const activeEvidenceSubmissionIds = ref(new Set());
 const activeAiGradingSubmissionIds = ref(new Set());
 const activeEventSources = new Set();
+let stableTeacherReviewConfirmAnimationTimer = null;
 const taskLlmStream = reactive({
   stage: "",
   status: "等待开始",
@@ -2931,6 +3041,9 @@ const selectedAssignmentRubricConfirmed = computed(() => Boolean(selectedAssignm
 const selectedAssignmentHasRubrics = computed(() =>
   selectedAssignmentQuestions.value.some((question) => Array.isArray(question.rubrics) && question.rubrics.length),
 );
+const rubricEditorScoreTotal = computed(() =>
+  rubricEditorDraft.rubrics.reduce((total, rubric) => total + Number(rubric.max_score ?? 0), 0),
+);
 const selectedAssignmentRubricStep = computed(() => {
   if (selectedAssignmentRubricConfirmed.value) return 3;
   if (selectedAssignmentHasRubrics.value) return 2;
@@ -2952,8 +3065,8 @@ const uploadedStudentSubmissionFileCount = computed(
 );
 const selectedTaskStudentMatches = computed(() => {
   const storedMatches = taskStudentMatchMap.value[String(selectedTaskId.value)] ?? [];
-  if (storedMatches.length) return storedMatches;
-  return buildLocalStudentMatches(taskClassStudents.value, selectedTaskFileGroup.value.student_submission ?? []);
+  if (storedMatches.length) return sortStudentsByNo(storedMatches);
+  return sortStudentsByNo(buildLocalStudentMatches(taskClassStudents.value, selectedTaskFileGroup.value.student_submission ?? []));
 });
 const taskHasStoredStudentMatches = computed(() =>
   (taskStudentMatchMap.value[String(selectedTaskId.value)] ?? []).length > 0,
@@ -2962,9 +3075,15 @@ const studentParseMatchedCount = computed(
   () => selectedTaskStudentMatches.value.filter((item) => item.match_status === "matched").length,
 );
 const studentParseTotalCount = computed(() => taskClassStudents.value.length);
-const plagiarismStudents = computed(() => taskPlagiarism.value?.students ?? []);
+const plagiarismStudents = computed(() => {
+  const persistedStudents = taskPlagiarism.value?.students ?? [];
+  if (persistedStudents.length) return sortStudentsByNo(persistedStudents);
+  return sortStudentsByNo(buildPreviewPlagiarismStudents());
+});
 const selectedPlagiarismStudent = computed(() =>
-  plagiarismStudents.value.find((student) => student.student_submission_id === selectedPlagiarismSubmissionId.value)
+  plagiarismStudents.value.find(
+    (student) => String(student.student_submission_id) === String(selectedPlagiarismSubmissionId.value),
+  )
   ?? plagiarismStudents.value[0],
 );
 const selectedPlagiarismMatches = computed(() => selectedPlagiarismStudent.value?.matches ?? []);
@@ -3036,11 +3155,15 @@ const plagiarismRiskStudentCount = computed(() =>
   plagiarismStudents.value.filter((student) => student.risk_level !== "none").length,
 );
 const answerExtractionStudents = computed(() => {
+  const currentStudentFiles = selectedTaskFileGroup.value.student_submission ?? [];
   const currentFileIds = new Set(
-    (selectedTaskFileGroup.value.student_submission ?? []).map((file) => String(file.id)),
+    currentStudentFiles.map((file) => String(file.id)),
   );
   const persistedStudents = (taskAnswerExtraction.value?.students ?? []).filter(
-    (student) => !student.source_file_id || currentFileIds.has(String(student.source_file_id)),
+    (student) =>
+      !currentStudentFiles.length
+      || !student.source_file_id
+      || currentFileIds.has(String(student.source_file_id)),
   );
   const previewStudents = buildPreviewAnswerExtractionStudents();
   const seenKeys = new Set(persistedStudents.map((student) => answerStudentKey(student)));
@@ -3050,17 +3173,24 @@ const answerExtractionStudents = computed(() => {
     seenKeys.add(key);
     return true;
   });
-  return [...persistedStudents, ...mergedPreviewStudents];
+  return sortStudentsByNo([...persistedStudents, ...mergedPreviewStudents]);
 });
 const answerExtractionEligibleCount = computed(() => answerExtractionStudents.value.length);
 const answerExtractionCompletedCount = computed(
-  () => answerExtractionStudents.value.filter((student) => student.status === "done").length,
+  () => answerExtractionStudents.value.filter((student) => studentAnswerExtractionCompleted(student)).length,
 );
 const answerExtractionRemainingCount = computed(() =>
   Math.max(0, answerExtractionEligibleCount.value - answerExtractionCompletedCount.value),
 );
+const answerExtractionFullyCompleted = computed(() =>
+  answerExtractionEligibleCount.value > 0 && answerExtractionRemainingCount.value === 0,
+);
+const answerExtractionHasCompletedStudents = computed(() => answerExtractionCompletedCount.value > 0);
 const answerExtractionHasAnswers = computed(() =>
   answerExtractionStudents.value.some((student) => (student.answers ?? []).length > 0),
+);
+const answerReExtractionBusy = computed(() =>
+  activeAnswerReExtractionSubmissionIds.value.size > 0 || queuedAnswerReExtractionStudents.value.length > 0,
 );
 const selectedAnswerStudent = computed(() => {
   if (!answerExtractionStudents.value.length) return null;
@@ -3084,9 +3214,9 @@ const activeAnswerQuestionId = computed(() => hoveredAnswerQuestionId.value);
 const evidenceExtractionStudents = computed(() => {
   const snapshotStudents = taskEvidenceExtraction.value?.students ?? [];
   if (snapshotStudents.length) {
-    return snapshotStudents.filter((student) => studentEvidenceEligible(student));
+    return sortStudentsByNo(snapshotStudents.filter((student) => studentEvidenceEligible(student)));
   }
-  return buildPreviewEvidenceExtractionStudents();
+  return sortStudentsByNo(buildPreviewEvidenceExtractionStudents());
 });
 const evidenceExtractionEligibleCount = computed(() => evidenceExtractionStudents.value.length);
 const evidenceExtractionHasEvidence = computed(() =>
@@ -3185,7 +3315,7 @@ const selectedEvidenceDimensionRows = computed(() =>
 );
 const aiGradingResults = computed(() => taskAiGrading.value?.results ?? []);
 const aiGradingStudents = computed(() =>
-  evidenceExtractionStudents.value.map((student) => {
+  sortStudentsByNo(evidenceExtractionStudents.value.map((student) => {
     const questions = (student.questions ?? []).map((question) => ({
       ...question,
       grading_result: visibleGradingResultForAnswer(question.student_answer_id),
@@ -3194,7 +3324,7 @@ const aiGradingStudents = computed(() =>
       ...student,
       questions,
     };
-  }),
+  })),
 );
 const aiGradingEligibleCount = computed(() => aiGradingStudents.value.length);
 const aiGradingTotalAnswerCount = computed(() =>
@@ -3321,6 +3451,9 @@ const reflectionGroups = computed(() => {
         id,
         rawId: reflectionGroupMode.value === "question" ? item.question_id : item.submission_id,
         title: reflectionGroupMode.value === "question" ? item.question_number : item.student_name,
+        student_no: item.student_no,
+        student_name: item.student_name,
+        submission_id: item.submission_id,
         caption:
           reflectionGroupMode.value === "question"
             ? `${formatScore(item.max_score)} 分 · ${item.question_type || "题目"}`
@@ -3333,7 +3466,9 @@ const reflectionGroups = computed(() => {
     group.total += 1;
     if (item.need_human_review || item.issues.length) group.flagged += 1;
   });
-  return [...groupMap.values()].sort((a, b) => b.flagged - a.flagged || String(a.title).localeCompare(String(b.title)));
+  const groups = [...groupMap.values()];
+  if (reflectionGroupMode.value === "student") return sortStudentsByNo(groups);
+  return groups.sort((a, b) => b.flagged - a.flagged || String(a.title).localeCompare(String(b.title)));
 });
 const activeReflectionGroupId = computed(() =>
   reflectionGroups.value.some((group) => group.id === selectedReflectionGroupId.value)
@@ -3387,7 +3522,7 @@ const selectedReflectionDimensionRows = computed(() => {
   });
 });
 const teacherReviewStudents = computed(() =>
-  aiGradingStudents.value.map((student) => {
+  sortStudentsByNo(aiGradingStudents.value.map((student) => {
     const questions = student.questions ?? [];
     const reviewQuestions = questions.filter((question) => question.grading_result);
     const reviewRequiredCount = reviewQuestions.filter((question) => questionNeedsTeacherReview(question, student)).length;
@@ -3404,7 +3539,7 @@ const teacherReviewStudents = computed(() =>
       review_modified_count: reviewModifiedCount,
       review_total_count: reviewQuestions.length,
     };
-  }).filter((student) => student.review_total_count > 0),
+  }).filter((student) => student.review_total_count > 0)),
 );
 const selectedTeacherReviewStudent = computed(() => {
   if (!teacherReviewStudents.value.length) return null;
@@ -4140,6 +4275,25 @@ function createEmptyAssignmentRubricState() {
   };
 }
 
+function clonePlain(value) {
+  if (value === undefined || value === null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeRubricEditorDimension(rubric = {}, index = 0) {
+  return {
+    id: rubric.id ?? null,
+    question_id: rubric.question_id ?? rubricEditorDraft.id ?? null,
+    dimension_name: rubric.dimension_name ?? "",
+    dimension_description: rubric.dimension_description ?? "",
+    max_score: Number(rubric.max_score ?? 0),
+    scoring_criteria: rubric.scoring_criteria ?? "",
+    deduction_criteria: rubric.deduction_criteria ?? "",
+    evidence_requirement: rubric.evidence_requirement ?? "",
+    sort_order: rubric.sort_order ?? index + 1,
+  };
+}
+
 function getAssignmentRubricState(assignmentId) {
   if (!assignmentId) return createEmptyAssignmentRubricState();
   const assignment = courseAssignments.value.find((item) => item.id === assignmentId);
@@ -4281,7 +4435,8 @@ function resetTaskDetailState() {
   questionAnalysisLoading.value = false;
   studentPrepareLoading.value = false;
   answerExtractionLoading.value = false;
-  reExtractingAnswerSubmissionId.value = null;
+  activeAnswerReExtractionSubmissionIds.value = new Set();
+  queuedAnswerReExtractionStudents.value = [];
   confirmingAnswerId.value = null;
   evidenceExtractionLoading.value = false;
   reExtractingEvidenceSubmissionId.value = null;
@@ -4405,6 +4560,45 @@ function mergeById(primaryItems, secondaryItems) {
   });
 }
 
+function studentSortNo(item) {
+  return String(item?.student_no ?? item?.studentNo ?? item?.studentId ?? "").trim();
+}
+
+function studentSortName(item) {
+  return String(item?.student_name ?? item?.name ?? item?.title ?? "").trim();
+}
+
+function studentSortStableKey(item) {
+  return String(
+    item?.submission_id
+    ?? item?.student_submission_id
+    ?? item?.student_id
+    ?? item?.source_file_id
+    ?? item?.matched_file_id
+    ?? item?.id
+    ?? "",
+  );
+}
+
+function compareStudentsByNo(left, right) {
+  const leftNo = studentSortNo(left);
+  const rightNo = studentSortNo(right);
+  if (leftNo && rightNo) {
+    const noDelta = leftNo.localeCompare(rightNo, "zh-Hans-CN", { numeric: true });
+    if (noDelta !== 0) return noDelta;
+  } else if (leftNo || rightNo) {
+    return leftNo ? -1 : 1;
+  }
+
+  const nameDelta = studentSortName(left).localeCompare(studentSortName(right), "zh-Hans-CN", { numeric: true });
+  if (nameDelta !== 0) return nameDelta;
+  return studentSortStableKey(left).localeCompare(studentSortStableKey(right), "zh-Hans-CN", { numeric: true });
+}
+
+function sortStudentsByNo(students) {
+  return [...(students ?? [])].sort(compareStudentsByNo);
+}
+
 function updateClassStudentCount(classId, count) {
   classes.value = classes.value.map((item) =>
     item.id === classId ? { ...item, student_count: count } : item,
@@ -4477,9 +4671,9 @@ async function fetchClassStudents(classId) {
   studentLoading.value = true;
   try {
     const remoteStudents = await listClassStudents(classId);
-    classStudents.value = mergeById(remoteStudents, readLocalStudents(classId));
+    classStudents.value = sortStudentsByNo(mergeById(remoteStudents, readLocalStudents(classId)));
   } catch {
-    classStudents.value = readLocalStudents(classId);
+    classStudents.value = sortStudentsByNo(readLocalStudents(classId));
   } finally {
     studentLoading.value = false;
   }
@@ -4499,12 +4693,14 @@ async function fetchTaskClassStudents(task) {
   if (!classItem?.id) return;
 
   try {
-    taskClassStudents.value = mergeById(
-      await listClassStudents(classItem.id),
-      readLocalStudents(classItem.id),
+    taskClassStudents.value = sortStudentsByNo(
+      mergeById(
+        await listClassStudents(classItem.id),
+        readLocalStudents(classItem.id),
+      ),
     );
   } catch {
-    taskClassStudents.value = readLocalStudents(classItem.id);
+    taskClassStudents.value = sortStudentsByNo(readLocalStudents(classItem.id));
   }
   writeLocalStudents(classItem.id, taskClassStudents.value);
   updateClassStudentCount(classItem.id, taskClassStudents.value.length);
@@ -4519,6 +4715,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   closeAllEventStreams();
+  if (stableTeacherReviewConfirmAnimationTimer) {
+    window.clearTimeout(stableTeacherReviewConfirmAnimationTimer);
+  }
 });
 
 watch(
@@ -5040,6 +5239,7 @@ async function submitStudent() {
   } else {
     classStudents.value = [{ id: Date.now(), class_group_id: classId, ...payload }, ...classStudents.value];
   }
+  classStudents.value = sortStudentsByNo(classStudents.value);
   writeLocalStudents(classId, classStudents.value);
   updateClassStudentCount(classId, classStudents.value.length);
 
@@ -5050,6 +5250,7 @@ async function submitStudent() {
     classStudents.value = wasEditing
       ? classStudents.value.map((item) => (item.id === studentId ? serverStudent : item))
       : [serverStudent, ...classStudents.value.filter((item) => item.id !== serverStudent.id && item.id !== studentId)];
+    classStudents.value = sortStudentsByNo(classStudents.value);
     writeLocalStudents(classId, classStudents.value);
     updateClassStudentCount(classId, classStudents.value.length);
   } catch {
@@ -5223,7 +5424,7 @@ function openAnswerExtractionEventStream(url) {
     if (data.stage !== "extract_answers") return;
     updateAnswerStudentProgress(data, {
       status: "done",
-      completed_questions: data.total_questions ?? taskQuestions.value.length,
+      completed_questions: data.completed_questions ?? data.total_questions ?? taskQuestions.value.length,
     });
     await fetchTaskAnswerExtraction(selectedTaskId.value);
   });
@@ -5239,6 +5440,12 @@ function openAnswerExtractionEventStream(url) {
     await fetchTaskQuestions(selectedTaskId.value);
     await fetchTaskAnswerExtraction(selectedTaskId.value);
     await fetchTaskEvidenceExtraction(selectedTaskId.value);
+    if (!answerExtractionHasCompletedStudents.value) {
+      answerExtractionLoading.value = false;
+      closeLlmEventStream(eventSource);
+      ElMessage.error("本轮答案抽取没有完成任何学生，请检查后重试");
+      return;
+    }
     taskStore.updateTask(selectedTaskId.value, {
       status: "answers_extracted",
       current_stage: "plagiarism_check",
@@ -5246,11 +5453,18 @@ function openAnswerExtractionEventStream(url) {
     });
     answerExtractionLoading.value = false;
     closeLlmEventStream(eventSource);
-    ElMessage.success("答案抽取完成");
+    if (answerExtractionFullyCompleted.value) {
+      ElMessage.success("答案抽取完成");
+    } else {
+      ElMessage.warning(
+        `已完成 ${answerExtractionCompletedCount.value}/${answerExtractionEligibleCount.value} 名学生，可先进入查重和证据提取，剩余学生可继续抽取`,
+      );
+    }
   });
-  eventSource.addEventListener("stage_failed", (event) => {
+  eventSource.addEventListener("stage_failed", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
+    await fetchTaskAnswerExtraction(selectedTaskId.value);
     answerExtractionLoading.value = false;
     closeLlmEventStream(eventSource);
     ElMessage.error(data.message || "答案抽取失败");
@@ -5265,14 +5479,15 @@ function openAnswerExtractionEventStream(url) {
 function openSingleStudentAnswerExtractionEventStream(url, submissionId) {
   const eventSource = new EventSource(url);
   activeEventSources.add(eventSource);
-  const normalizedSubmissionId = Number(submissionId);
+  const normalizedSubmissionId = answerSubmissionKey(submissionId);
 
   const finishStream = async (success, message) => {
-    reExtractingAnswerSubmissionId.value = null;
+    setAnswerReExtractionActive(normalizedSubmissionId, false);
     closeLlmEventStream(eventSource);
     await fetchTaskAnswerExtraction(selectedTaskId.value);
     await fetchTaskEvidenceExtraction(selectedTaskId.value);
     await fetchTaskGradingResults(selectedTaskId.value);
+    processAnswerReExtractionQueue();
     if (success) {
       ElMessage.success(message);
     } else {
@@ -5283,17 +5498,17 @@ function openSingleStudentAnswerExtractionEventStream(url, submissionId) {
   eventSource.addEventListener("student_done", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
-    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    if (answerSubmissionKey(data.submission_id) !== normalizedSubmissionId) return;
     updateAnswerStudentProgress(data, {
       status: "done",
-      completed_questions: data.total_questions ?? taskQuestions.value.length,
+      completed_questions: data.completed_questions ?? data.total_questions ?? taskQuestions.value.length,
     });
     await finishStream(true, `${data.student_name || "该学生"}答案重新抽取完成`);
   });
   eventSource.addEventListener("student_failed", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
-    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    if (answerSubmissionKey(data.submission_id) !== normalizedSubmissionId) return;
     updateAnswerStudentProgress(data, {
       status: "failed",
       error_message: data.message ?? "抽取失败",
@@ -5303,19 +5518,20 @@ function openSingleStudentAnswerExtractionEventStream(url, submissionId) {
   eventSource.addEventListener("student_started", (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
-    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    if (answerSubmissionKey(data.submission_id) !== normalizedSubmissionId) return;
     updateAnswerStudentProgress(data, { status: "processing", completed_questions: 0 });
   });
   eventSource.addEventListener("student_question_progress", (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_answers") return;
-    if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    if (answerSubmissionKey(data.submission_id) !== normalizedSubmissionId) return;
     updateAnswerStudentProgress(data, { status: "processing" });
   });
   eventSource.onerror = () => {
-    if (reExtractingAnswerSubmissionId.value !== normalizedSubmissionId) return;
-    reExtractingAnswerSubmissionId.value = null;
+    if (!answerReExtractionIsActive(normalizedSubmissionId)) return;
+    setAnswerReExtractionActive(normalizedSubmissionId, false);
     closeLlmEventStream(eventSource);
+    processAnswerReExtractionQueue();
   };
   return eventSource;
 }
@@ -5338,15 +5554,30 @@ function openEvidenceExtractionEventStream(url) {
       completed_answers: data.completed_answers ?? taskEvidenceExtraction.value?.completed_answers ?? 0,
     };
   });
+  eventSource.addEventListener("student_started", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    evidenceExtractionLoading.value = true;
+    markEvidenceSubmissionRunning(data.submission_id);
+  });
+  eventSource.addEventListener("student_done", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    activeEvidenceSubmissionIds.value = new Set(
+      [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== Number(data.submission_id)),
+    );
+  });
+  eventSource.addEventListener("student_failed", (event) => {
+    const data = parseSseData(event);
+    if (data.stage !== "extract_evidence") return;
+    activeEvidenceSubmissionIds.value = new Set(
+      [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== Number(data.submission_id)),
+    );
+  });
   eventSource.addEventListener("answer_started", (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
-    if (data.submission_id != null) {
-      activeEvidenceSubmissionIds.value = new Set([
-        ...activeEvidenceSubmissionIds.value,
-        data.submission_id,
-      ]);
-    }
+    markEvidenceSubmissionRunning(data.submission_id);
     updateEvidenceQuestionRuntime(data, "processing");
   });
   eventSource.addEventListener("answer_done", async (event) => {
@@ -5390,11 +5621,12 @@ function openEvidenceExtractionEventStream(url) {
     closeLlmEventStream(eventSource);
     ElMessage.success("证据提取完成");
   });
-  eventSource.addEventListener("stage_failed", (event) => {
+  eventSource.addEventListener("stage_failed", async (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
     evidenceExtractionLoading.value = false;
     activeEvidenceSubmissionIds.value = new Set();
+    await fetchTaskEvidenceExtraction(selectedTaskId.value);
     closeLlmEventStream(eventSource);
     ElMessage.error(data.message || "证据提取失败");
   });
@@ -5442,27 +5674,13 @@ function openSingleStudentEvidenceExtractionEventStream(url, submissionId) {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
     if (Number(data.submission_id) !== normalizedSubmissionId) return;
-    activeEvidenceSubmissionIds.value = new Set([
-      ...activeEvidenceSubmissionIds.value,
-      normalizedSubmissionId,
-    ]);
-    if (taskEvidenceExtraction.value?.students?.length) {
-      taskEvidenceExtraction.value = {
-        ...taskEvidenceExtraction.value,
-        status: "processing",
-        evidence_extraction_started: true,
-        students: taskEvidenceExtraction.value.students.map((item) =>
-          Number(item.submission_id) === normalizedSubmissionId
-            ? { ...item, status: "processing" }
-            : item,
-        ),
-      };
-    }
+    markEvidenceSubmissionRunning(normalizedSubmissionId);
   });
   eventSource.addEventListener("answer_started", (event) => {
     const data = parseSseData(event);
     if (data.stage !== "extract_evidence") return;
     if (Number(data.submission_id) !== normalizedSubmissionId) return;
+    markEvidenceSubmissionRunning(normalizedSubmissionId);
     updateEvidenceQuestionRuntime(data, "processing");
   });
   eventSource.addEventListener("answer_done", async (event) => {
@@ -5646,6 +5864,22 @@ function closeLlmEventStream(eventSource) {
   activeEventSources.delete(eventSource);
 }
 
+function waitForEventStreamOpen(eventSource, timeout = 600) {
+  if (eventSource.readyState === EventSource.OPEN) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      eventSource.removeEventListener("open", finish);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, timeout);
+    eventSource.addEventListener("open", finish);
+  });
+}
+
 function parseSseData(event) {
   try {
     return JSON.parse(event.data || "{}");
@@ -5751,6 +5985,122 @@ async function runAssignmentRubricBuild() {
     assignmentRubricBuildLoading.value = false;
     clearLlmStream(assignmentLlmStream);
   }
+}
+
+function openAssignmentRubricEditor(question) {
+  const draft = clonePlain(question) ?? {};
+  rubricEditorOriginalKey.value = String(draft.id ?? draft.question_number ?? "");
+  Object.assign(rubricEditorDraft, {
+    id: draft.id ?? null,
+    question_number: draft.question_number ?? "",
+    content: draft.content ?? "",
+    total_score: Number(draft.total_score ?? 0),
+    question_type: draft.question_type ?? "",
+    knowledge_points: draft.knowledge_points ?? [],
+    difficulty: draft.difficulty ?? "",
+    expected_answer_type: draft.expected_answer_type ?? "",
+    sort_order: draft.sort_order ?? 0,
+    rubrics: (draft.rubrics ?? []).map((rubric, index) => normalizeRubricEditorDimension(rubric, index)),
+  });
+  if (!rubricEditorDraft.rubrics.length) {
+    addRubricEditorDimension();
+  }
+  rubricEditorVisible.value = true;
+}
+
+async function addRubricEditorDimension() {
+  rubricEditorDraft.rubrics.push(
+    normalizeRubricEditorDimension(
+      {
+        dimension_name: "",
+        dimension_description: "",
+        max_score: 0,
+        scoring_criteria: "",
+        deduction_criteria: "",
+        evidence_requirement: "",
+      },
+      rubricEditorDraft.rubrics.length,
+    ),
+  );
+  await nextTick();
+  const list = rubricEditorDimensionListRef.value;
+  if (!list) return;
+  list.scrollTo({
+    top: list.scrollHeight,
+    behavior: "smooth",
+  });
+}
+
+function removeRubricEditorDimension(index) {
+  if (rubricEditorDraft.rubrics.length <= 1) return;
+  rubricEditorDraft.rubrics.splice(index, 1);
+  rubricEditorDraft.rubrics.forEach((rubric, rubricIndex) => {
+    rubric.sort_order = rubricIndex + 1;
+  });
+}
+
+function saveAssignmentRubricEditor() {
+  if (!selectedCourseAssignmentId.value) return;
+  if (!String(rubricEditorDraft.question_number ?? "").trim()) {
+    ElMessage.warning("请填写题号");
+    return;
+  }
+  if (!String(rubricEditorDraft.content ?? "").trim()) {
+    ElMessage.warning("请填写题目内容");
+    return;
+  }
+  if (!rubricEditorDraft.rubrics.length) {
+    ElMessage.warning("至少保留一个评分维度");
+    return;
+  }
+  const normalizedRubrics = rubricEditorDraft.rubrics.map((rubric, index) => ({
+    ...clonePlain(rubric),
+    dimension_name: String(rubric.dimension_name ?? "").trim(),
+    dimension_description: String(rubric.dimension_description ?? "").trim(),
+    max_score: Number(rubric.max_score ?? 0),
+    scoring_criteria: String(rubric.scoring_criteria ?? "").trim(),
+    deduction_criteria: String(rubric.deduction_criteria ?? "").trim(),
+    evidence_requirement: String(rubric.evidence_requirement ?? "").trim(),
+    sort_order: index + 1,
+  }));
+  if (normalizedRubrics.some((rubric) => !rubric.dimension_name)) {
+    ElMessage.warning("请填写所有评分维度名称");
+    return;
+  }
+  if (normalizedRubrics.some((rubric) => rubric.max_score <= 0)) {
+    ElMessage.warning("每个评分维度分值必须大于 0");
+    return;
+  }
+  if (
+    normalizedRubrics.some(
+      (rubric) => !rubric.scoring_criteria || !rubric.deduction_criteria || !rubric.evidence_requirement,
+    )
+  ) {
+    ElMessage.warning("请补全每个维度的得分条件、扣分条件和证据要求");
+    return;
+  }
+  const originalQuestions = selectedAssignmentQuestions.value;
+  const updatedQuestion = {
+    ...clonePlain(rubricEditorDraft),
+    question_number: String(rubricEditorDraft.question_number).trim(),
+    content: String(rubricEditorDraft.content).trim(),
+    total_score: Number(rubricEditorScoreTotal.value ?? 0),
+    rubrics: normalizedRubrics,
+  };
+  const updatedQuestions = originalQuestions.map((question) => {
+    const sameQuestion = rubricEditorDraft.id
+      ? String(question.id) === String(rubricEditorOriginalKey.value)
+      : String(question.question_number) === String(rubricEditorOriginalKey.value);
+    return sameQuestion ? updatedQuestion : question;
+  });
+  setAssignmentRubricState(selectedCourseAssignmentId.value, {
+    questions: updatedQuestions,
+    rubrics: updatedQuestions,
+    rubric_confirmed: false,
+    rubric_confirmed_at: null,
+  });
+  rubricEditorVisible.value = false;
+  ElMessage.success("这道题的评分量规已更新，请确认并绑定后用于批改");
 }
 
 async function confirmSelectedAssignmentRubrics() {
@@ -5910,12 +6260,12 @@ async function fetchTaskPlagiarismStudents(taskId) {
   try {
     const snapshot = await getTaskPlagiarismStudents(taskId);
     taskPlagiarism.value = snapshot;
-    if (!selectedPlagiarismSubmissionId.value && snapshot.students?.length) {
-      await selectPlagiarismStudent(snapshot.students[0].student_submission_id, { silent: true });
+    if (!selectedPlagiarismSubmissionId.value && plagiarismStudents.value.length) {
+      await selectPlagiarismStudent(plagiarismStudents.value[0].student_submission_id, { silent: true });
     }
   } catch {
     taskPlagiarism.value = { check: null, students: [] };
-    selectedPlagiarismSubmissionId.value = null;
+    selectedPlagiarismSubmissionId.value = plagiarismStudents.value[0]?.student_submission_id ?? null;
     selectedPlagiarismMatchId.value = null;
   }
 }
@@ -5929,9 +6279,7 @@ async function fetchTaskAnswerExtraction(taskId) {
   try {
     const snapshot = await getTaskAnswerExtraction(taskId);
     taskAnswerExtraction.value = snapshot;
-    if (!selectedAnswerSubmissionId.value && snapshot.students?.length) {
-      selectedAnswerSubmissionId.value = snapshot.students[0].submission_id;
-    } else if (!selectedAnswerSubmissionId.value && answerExtractionStudents.value.length) {
+    if (!selectedAnswerSubmissionId.value && answerExtractionStudents.value.length) {
       selectedAnswerSubmissionId.value = answerExtractionStudents.value[0].submission_id;
     }
   } catch {
@@ -6091,8 +6439,8 @@ async function runStudentPrepare() {
 
 async function runPlagiarismCheck() {
   if (!selectedTaskId.value) return;
-  if (!answerExtractionHasAnswers.value) {
-    ElMessage.warning("请先完成答案抽取，再运行作业查重");
+  if (!answerExtractionHasCompletedStudents.value) {
+    ElMessage.warning("请先至少完成 1 名学生的答案抽取，再运行作业查重");
     return;
   }
   plagiarismCheckLoading.value = true;
@@ -6118,6 +6466,14 @@ async function runPlagiarismCheck() {
 async function selectPlagiarismStudent(submissionId, options = {}) {
   if (!selectedTaskId.value || !submissionId) return;
   selectedPlagiarismSubmissionId.value = submissionId;
+  const currentStudent = plagiarismStudents.value.find(
+    (student) => String(student.student_submission_id) === String(submissionId),
+  );
+  if (!taskPlagiarism.value?.check || currentStudent?.preview_only) {
+    selectedPlagiarismMatchId.value = null;
+    await resetMiddleColumnScroll(plagiarismMatchListRef);
+    return;
+  }
   try {
     const detail = await getTaskPlagiarismStudentDetail(selectedTaskId.value, submissionId);
     taskPlagiarism.value = {
@@ -6139,6 +6495,97 @@ async function selectPlagiarismStudent(submissionId, options = {}) {
 
 function selectPlagiarismMatch(matchId) {
   selectedPlagiarismMatchId.value = matchId;
+}
+
+function answerSubmissionKey(submissionId) {
+  return String(submissionId ?? "");
+}
+
+function answerReExtractionIsActive(submissionId) {
+  return activeAnswerReExtractionSubmissionIds.value.has(answerSubmissionKey(submissionId));
+}
+
+function answerReExtractionIsQueued(submissionId) {
+  const key = answerSubmissionKey(submissionId);
+  return queuedAnswerReExtractionStudents.value.some(
+    (student) => answerSubmissionKey(student.submission_id) === key,
+  );
+}
+
+function setAnswerReExtractionActive(submissionId, active) {
+  const key = answerSubmissionKey(submissionId);
+  if (!key) return;
+  const next = new Set(activeAnswerReExtractionSubmissionIds.value);
+  if (active) {
+    next.add(key);
+  } else {
+    next.delete(key);
+  }
+  activeAnswerReExtractionSubmissionIds.value = next;
+}
+
+function enqueueAnswerReExtractionStudent(student) {
+  if (!student?.submission_id) return false;
+  const key = answerSubmissionKey(student.submission_id);
+  if (answerReExtractionIsActive(key) || answerReExtractionIsQueued(key)) {
+    ElMessage.info("该学生已在答案抽取队列中");
+    return false;
+  }
+  if (
+    activeAnswerReExtractionSubmissionIds.value.size >= ANSWER_REEXTRACT_CONCURRENCY
+    && queuedAnswerReExtractionStudents.value.length >= ANSWER_REEXTRACT_QUEUE_LIMIT
+  ) {
+    ElMessage.warning(`答案抽取等待队列已满，最多排队 ${ANSWER_REEXTRACT_QUEUE_LIMIT} 名学生`);
+    return false;
+  }
+  queuedAnswerReExtractionStudents.value = [
+    ...queuedAnswerReExtractionStudents.value,
+    { ...student },
+  ];
+  processAnswerReExtractionQueue();
+  if (answerReExtractionIsQueued(key)) {
+    ElMessage.success(`已加入答案抽取队列，前方 ${queuedAnswerReExtractionStudents.value.length - 1} 名学生`);
+  }
+  return true;
+}
+
+function processAnswerReExtractionQueue() {
+  if (!selectedTaskId.value || answerExtractionLoading.value) return;
+  while (
+    activeAnswerReExtractionSubmissionIds.value.size < ANSWER_REEXTRACT_CONCURRENCY
+    && queuedAnswerReExtractionStudents.value.length
+  ) {
+    const [nextStudent, ...remainingStudents] = queuedAnswerReExtractionStudents.value;
+    queuedAnswerReExtractionStudents.value = remainingStudents;
+    if (!nextStudent?.submission_id || answerReExtractionIsActive(nextStudent.submission_id)) {
+      continue;
+    }
+    startQueuedAnswerReExtraction(nextStudent);
+  }
+}
+
+async function startQueuedAnswerReExtraction(student) {
+  const submissionKey = answerSubmissionKey(student.submission_id);
+  setAnswerReExtractionActive(submissionKey, true);
+  const eventSource = openSingleStudentAnswerExtractionEventStream(
+    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
+    student.submission_id,
+  );
+  updateAnswerStudentProgress(
+    {
+      submission_id: student.submission_id,
+      total_questions: taskQuestions.value.length,
+    },
+    { status: "processing", completed_questions: 0 },
+  );
+  try {
+    await startTaskAnswerExtractionForSubmission(selectedTaskId.value, student.submission_id);
+  } catch (error) {
+    setAnswerReExtractionActive(submissionKey, false);
+    closeLlmEventStream(eventSource);
+    ElMessage.error(error?.response?.data?.detail ?? "该学生答案重新抽取启动失败");
+    processAnswerReExtractionQueue();
+  }
 }
 
 function clearStudentDownstreamAfterAnswerExtraction(submissionId) {
@@ -6220,8 +6667,8 @@ async function runSingleStudentEvidenceExtraction(student) {
     ElMessage.warning("已有学生正在重新提取证据，请稍候");
     return;
   }
-  if (!answerExtractionHasAnswers.value) {
-    ElMessage.warning("请先完成答案抽取，再提取评分证据");
+  if (!answerExtractionHasCompletedStudents.value) {
+    ElMessage.warning("请先至少完成 1 名学生的答案抽取，再提取评分证据");
     return;
   }
 
@@ -6242,21 +6689,15 @@ async function runSingleStudentEvidenceExtraction(student) {
     buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
     student.submission_id,
   );
-  if (taskEvidenceExtraction.value?.students?.length) {
-    taskEvidenceExtraction.value = {
-      ...taskEvidenceExtraction.value,
-      status: "processing",
-      students: taskEvidenceExtraction.value.students.map((item) =>
-        Number(item.submission_id) === Number(student.submission_id)
-          ? { ...item, status: "processing" }
-          : item,
-      ),
-    };
-  }
+  markEvidenceSubmissionRunning(student.submission_id);
   try {
+    await waitForEventStreamOpen(eventSource);
     await startTaskEvidenceExtractionForSubmission(selectedTaskId.value, student.submission_id);
   } catch (error) {
     reExtractingEvidenceSubmissionId.value = null;
+    activeEvidenceSubmissionIds.value = new Set(
+      [...activeEvidenceSubmissionIds.value].filter((id) => Number(id) !== Number(student.submission_id)),
+    );
     closeLlmEventStream(eventSource);
     ElMessage.error(error?.response?.data?.detail ?? "该学生证据重新提取启动失败");
   }
@@ -6336,8 +6777,8 @@ async function runSingleStudentAnswerExtraction(student) {
     ElMessage.warning("批量答案抽取正在进行中，请稍候");
     return;
   }
-  if (reExtractingAnswerSubmissionId.value) {
-    ElMessage.warning("已有学生正在重新抽取，请稍候");
+  if (answerReExtractionIsActive(student.submission_id) || answerReExtractionIsQueued(student.submission_id)) {
+    ElMessage.info("该学生已在答案抽取队列中");
     return;
   }
 
@@ -6352,31 +6793,17 @@ async function runSingleStudentAnswerExtraction(student) {
     clearStudentDownstreamAfterAnswerExtraction(student.submission_id);
   }
 
-  reExtractingAnswerSubmissionId.value = student.submission_id;
-  const eventSource = openSingleStudentAnswerExtractionEventStream(
-    buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
-    student.submission_id,
-  );
-  updateAnswerStudentProgress(
-    {
-      submission_id: student.submission_id,
-      total_questions: taskQuestions.value.length,
-    },
-    { status: "processing", completed_questions: 0 },
-  );
-  try {
-    await startTaskAnswerExtractionForSubmission(selectedTaskId.value, student.submission_id);
-  } catch (error) {
-    reExtractingAnswerSubmissionId.value = null;
-    closeLlmEventStream(eventSource);
-    ElMessage.error(error?.response?.data?.detail ?? "该学生答案重新抽取启动失败");
-  }
+  enqueueAnswerReExtractionStudent(student);
 }
 
 async function runAnswerExtraction(force = false) {
   if (!selectedTaskId.value) return;
   if (!uploadedStudentSubmissionFileCount.value) {
     ElMessage.warning("请先上传学生作业文件");
+    return;
+  }
+  if (answerReExtractionBusy.value) {
+    ElMessage.warning("单个学生答案抽取队列正在执行中，请稍候");
     return;
   }
 
@@ -6408,6 +6835,9 @@ async function runAnswerExtraction(force = false) {
     if (!taskQuestions.value.length) {
       await fetchTaskQuestions(selectedTaskId.value);
     }
+    const initialStudents = force
+      ? buildInitialAnswerExtractionStudents(started.total_questions)
+      : answerExtractionStudents.value;
     taskAnswerExtraction.value = {
       task_id: selectedTaskId.value,
       status: "students_prepared",
@@ -6415,9 +6845,7 @@ async function runAnswerExtraction(force = false) {
       total_questions: started.total_questions,
       total_students: started.total_students,
       completed_students: 0,
-      students: force
-        ? buildInitialAnswerExtractionStudents(started.total_questions)
-        : answerExtractionStudents.value,
+      students: markInitialAnswerExtractionWorkers(initialStudents, started.max_workers),
     };
     selectedAnswerSubmissionId.value = taskAnswerExtraction.value.students[0]?.submission_id ?? null;
     if (force) {
@@ -6440,8 +6868,12 @@ async function runAnswerExtraction(force = false) {
 
 async function runEvidenceExtraction(force = false) {
   if (!selectedTaskId.value) return;
-  if (!answerExtractionHasAnswers.value) {
-    ElMessage.warning("请先完成答案抽取，再提取评分证据");
+  if (!answerExtractionHasCompletedStudents.value) {
+    ElMessage.warning("请先至少完成 1 名学生的答案抽取，再提取评分证据");
+    return;
+  }
+  if (reExtractingEvidenceSubmissionId.value) {
+    ElMessage.warning("已有学生正在重新提取证据，请稍候");
     return;
   }
   if (!force && evidenceExtractionRemainingAnswerCount.value === 0) {
@@ -6463,6 +6895,7 @@ async function runEvidenceExtraction(force = false) {
     buildApiUrl(`/tasks/${selectedTaskId.value}/events`),
   );
   try {
+    await waitForEventStreamOpen(eventSource);
     const started = await startTaskEvidenceExtraction(selectedTaskId.value, 3, force);
     markEvidenceExtractionStarted(started);
     if (force) {
@@ -6925,7 +7358,7 @@ async function resetMiddleColumnScroll(containerRef) {
 
 async function scrollSelectedAnswerToFirstHighlight() {
   await nextTick();
-  const firstQuestionId = highlightedSubmissionParts.value.find((part) => part.questionId)?.questionId;
+  const firstQuestionId = highlightedSubmissionParts.value.find((part) => part.questionIds?.length)?.questionId;
   if (!shouldSkipAnswerAutoScroll("source", "student-list")) {
     scrollAnswerSourceToQuestion(firstQuestionId, { fallbackToTop: true });
   }
@@ -6946,8 +7379,10 @@ function scrollAnswerSourceToQuestion(questionId, options = {}) {
   if (!container) return;
 
   const target = questionId
-    ? Array.from(container.querySelectorAll("[data-source-question-id]")).find(
-        (element) => String(element.dataset.sourceQuestionId) === String(questionId),
+    ? Array.from(container.querySelectorAll("[data-source-question-ids]")).find(
+        (element) => String(element.dataset.sourceQuestionIds ?? "")
+          .split(",")
+          .includes(String(questionId)),
       )
     : null;
 
@@ -6970,6 +7405,30 @@ function studentAnswerProgress(student) {
   const total = Number(student.total_questions || taskQuestions.value.length || 0);
   if (!total) return 0;
   return Math.min(100, Math.round((Number(student.completed_questions || 0) / total) * 100));
+}
+
+function studentNeedsAnswerExtraction(student) {
+  if (!student || student.preview_only) return false;
+  const answers = student.answers ?? [];
+  return (
+    !studentAnswerExtractionCompleted(student)
+    || answers.some((answer) => answer.extraction_status === "extract_error")
+  );
+}
+
+function markInitialAnswerExtractionWorkers(students, maxWorkers) {
+  const workerCount = Math.max(1, Number(maxWorkers || 1));
+  let runningCount = 0;
+  return students.map((student) => {
+    if (runningCount >= workerCount || !studentNeedsAnswerExtraction(student)) {
+      return student;
+    }
+    runningCount += 1;
+    return {
+      ...student,
+      status: "processing",
+    };
+  });
 }
 
 function studentAnswerExtractionFinalized(student) {
@@ -7035,6 +7494,7 @@ function studentEvidenceEligible(student) {
   const total = Number(student?.total_questions || taskQuestions.value.length || 0);
   const answers = student?.answers ?? student?.questions ?? [];
   if (!total || answers.length < total) return false;
+  if (student?.answers && !studentAnswerExtractionCompleted(student)) return false;
   return true;
 }
 
@@ -7073,6 +7533,27 @@ function markEvidenceExtractionStarted(started = {}) {
       status: student.status === "done" ? "done" : "pending",
     })),
   };
+}
+
+function markEvidenceSubmissionRunning(submissionId) {
+  const normalizedSubmissionId = Number(submissionId);
+  if (!Number.isFinite(normalizedSubmissionId)) return;
+  activeEvidenceSubmissionIds.value = new Set([
+    ...activeEvidenceSubmissionIds.value,
+    normalizedSubmissionId,
+  ]);
+  if (taskEvidenceExtraction.value?.students?.length) {
+    taskEvidenceExtraction.value = {
+      ...taskEvidenceExtraction.value,
+      status: "processing",
+      evidence_extraction_started: true,
+      students: taskEvidenceExtraction.value.students.map((item) =>
+        Number(item.submission_id) === normalizedSubmissionId
+          ? { ...item, status: "processing" }
+          : item,
+      ),
+    };
+  }
 }
 
 function ensureEvidenceSelection() {
@@ -7632,6 +8113,29 @@ function teacherReviewFinalScore(questionItem) {
   return revision?.final_score ?? questionItem?.grading_result?.final_score ?? questionItem?.grading_result?.score;
 }
 
+function finalScoreGradingStatusMeta(questionItem) {
+  const finalScoreRaw = teacherReviewFinalScore(questionItem);
+  if (finalScoreRaw === null || finalScoreRaw === undefined) {
+    return { label: "待评分", type: "info" };
+  }
+  const finalScore = Number(finalScoreRaw);
+  if (Number.isNaN(finalScore)) {
+    return { label: "待评分", type: "info" };
+  }
+  const maxScore = Number(questionMaxScore(questionItem?.question_id) ?? 0);
+  if (maxScore > 0 && finalScore >= maxScore) {
+    return { label: "满分", type: "success" };
+  }
+  if (finalScore > 0) {
+    return { label: "部分得分", type: "warning" };
+  }
+  const hasAnswer = Boolean(String(questionItem?.answer_text ?? "").trim());
+  if (!hasAnswer) {
+    return { label: "缺答", type: "info" };
+  }
+  return { label: "零分", type: "danger" };
+}
+
 function teacherReviewStatusMeta(questionItem) {
   const revision = teacherReviewRevisionForResult(questionItem?.grading_result);
   if (revision?.review_status === "teacher_modified") return { label: "已修改", type: "warning" };
@@ -7924,6 +8428,21 @@ async function saveTeacherReviewDraft() {
   );
 }
 
+function triggerStableTeacherReviewConfirmAnimation() {
+  if (stableTeacherReviewConfirmAnimationTimer) {
+    window.clearTimeout(stableTeacherReviewConfirmAnimationTimer);
+    stableTeacherReviewConfirmAnimationTimer = null;
+  }
+  stableTeacherReviewConfirmAnimating.value = false;
+  nextTick(() => {
+    stableTeacherReviewConfirmAnimating.value = true;
+    stableTeacherReviewConfirmAnimationTimer = window.setTimeout(() => {
+      stableTeacherReviewConfirmAnimating.value = false;
+      stableTeacherReviewConfirmAnimationTimer = null;
+    }, 760);
+  });
+}
+
 async function confirmStableTeacherReviewItems() {
   if (confirmingStableTeacherReview.value) return;
   const pendingItems = [...teacherReviewPendingStableItems.value];
@@ -7952,6 +8471,9 @@ async function confirmStableTeacherReviewItems() {
       progress: taskProgressForStage("teacher_review"),
     });
     ensureTeacherReviewSelection();
+    if (confirmedCount > 0) {
+      triggerStableTeacherReviewConfirmAnimation();
+    }
     ElMessage.success(`已确认 ${confirmedCount} 条稳定评分`);
   } finally {
     confirmingStableTeacherReview.value = false;
@@ -8566,6 +9088,19 @@ function studentEvidenceRunning(student) {
   return [...activeEvidenceSubmissionIds.value].some((id) => Number(id) === submissionId);
 }
 
+function studentEvidenceStatusMeta(student) {
+  if (studentEvidenceRunning(student)) return { label: "提取中", type: "primary" };
+  if (!evidenceExtractionStarted.value) return { label: "待提取", type: "info" };
+  if (studentEvidenceCompleted(student)) {
+    return studentEvidenceLowConfidenceCount(student) > 0
+      ? { label: "需复核", type: "warning" }
+      : { label: "稳定", type: "success" };
+  }
+  return studentEvidenceCompletedQuestionCount(student) > 0
+    ? { label: "待补齐", type: "warning" }
+    : { label: "待提取", type: "info" };
+}
+
 function studentEvidenceLowConfidenceCount(student) {
   return (student?.questions ?? []).reduce(
     (sum, question) => sum + questionEvidenceLowConfidenceCount(question),
@@ -8610,6 +9145,22 @@ function plagiarismRiskMeta(riskLevel) {
     none: { label: "无明显相似", type: "success" },
   };
   return meta[riskLevel] ?? meta.none;
+}
+
+function buildPreviewPlagiarismStudents() {
+  return answerExtractionStudents.value
+    .filter((student) => studentAnswerExtractionCompleted(student))
+    .map((student) => ({
+      student_submission_id: student.submission_id,
+      student_no: student.student_no,
+      student_name: student.student_name,
+      max_similarity_score: 0,
+      similar_students_count: 0,
+      risk_level: "none",
+      top_match_submission_id: null,
+      matches: [],
+      preview_only: true,
+    }));
 }
 
 function plagiarismCheckStatusMeta(status) {
@@ -8728,9 +9279,11 @@ function resolveAnswerHighlightContent(student) {
 }
 
 function answerStudentKey(student) {
-  if (student?.source_file_id) return `file:${student.source_file_id}`;
   if (student?.student_no) return `no:${student.student_no}`;
-  return `name:${student?.student_name ?? ""}`;
+  if (student?.student_name) return `name:${student.student_name}`;
+  if (student?.submission_id) return `submission:${student.submission_id}`;
+  if (student?.source_file_id) return `file:${student.source_file_id}`;
+  return `preview:${student?.matched_file_id ?? student?.id ?? ""}`;
 }
 
 function buildPreviewAnswerExtractionStudents() {
@@ -8804,7 +9357,7 @@ function updateAnswerStudentProgress(data, patch) {
   taskAnswerExtraction.value = {
     ...taskAnswerExtraction.value,
     students: taskAnswerExtraction.value.students.map((student) =>
-      student.submission_id === data.submission_id
+      String(student.submission_id) === String(data.submission_id)
         ? {
             ...student,
             status: patch.status ?? student.status,
@@ -8820,7 +9373,7 @@ function updateAnswerStudentProgress(data, patch) {
     ),
   };
   taskAnswerExtraction.value.completed_students = taskAnswerExtraction.value.students.filter(
-    (student) => student.status === "done",
+    (student) => studentAnswerExtractionCompleted(student),
   ).length;
 }
 

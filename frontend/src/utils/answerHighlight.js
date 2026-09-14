@@ -268,24 +268,37 @@ export function buildHighlightedSubmissionParts(student, answers) {
       });
     });
   });
-  ranges.sort((left, right) => left.start - right.start);
+  ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+
+  const boundaries = new Set([0, content.length]);
+  ranges.forEach((range) => {
+    boundaries.add(Math.max(0, Math.min(content.length, range.start)));
+    boundaries.add(Math.max(0, Math.min(content.length, range.end)));
+  });
+  const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
 
   const parts = [];
-  let cursor = 0;
-  ranges.forEach((range, index) => {
-    if (range.start < cursor) return;
-    if (range.start > cursor) {
-      parts.push({ key: `text-${index}-${cursor}`, text: content.slice(cursor, range.start), questionId: null });
+  for (let index = 0; index < sortedBoundaries.length - 1; index += 1) {
+    const start = sortedBoundaries[index];
+    const end = sortedBoundaries[index + 1];
+    if (end <= start) continue;
+
+    const matchedRanges = ranges.filter((range) => range.start <= start && range.end >= end);
+    if (!matchedRanges.length) {
+      parts.push({ key: `text-${index}-${start}`, text: content.slice(start, end), questionId: null, questionIds: [] });
+      continue;
     }
+
+    const questionIds = Array.from(new Set(matchedRanges.map((range) => range.questionId)));
+    const primaryRange = [...matchedRanges].sort(
+      (left, right) => (left.end - left.start) - (right.end - right.start) || left.start - right.start,
+    )[0];
     parts.push({
-      key: `answer-${range.questionId}-${range.start}`,
-      text: content.slice(range.start, range.end),
-      questionId: range.questionId,
+      key: `answer-${questionIds.join("-")}-${start}`,
+      text: content.slice(start, end),
+      questionId: primaryRange.questionId,
+      questionIds,
     });
-    cursor = range.end;
-  });
-  if (cursor < content.length) {
-    parts.push({ key: `text-tail-${cursor}`, text: content.slice(cursor), questionId: null });
   }
   return parts.length ? parts : [{ key: "all", text: content, questionId: null }];
 }

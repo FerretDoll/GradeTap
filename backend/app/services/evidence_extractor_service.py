@@ -90,12 +90,24 @@ class EvidenceExtractorService:
             submissions = db.scalars(
                 select(StudentSubmission)
                 .where(StudentSubmission.task_id == task_id)
-                .order_by(StudentSubmission.id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                ),
             ).all()
             answers = db.scalars(
                 select(StudentAnswer)
+                .join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
                 .where(StudentAnswer.task_id == task_id)
-                .order_by(StudentAnswer.student_submission_id, StudentAnswer.question_id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                    StudentAnswer.question_id,
+                ),
             ).all()
             eligible_submission_ids = self._eligible_submission_ids(db, task_id, answers)
             answers = [
@@ -108,6 +120,7 @@ class EvidenceExtractorService:
                 .where(AnswerEvidence.task_id == task_id)
                 .order_by(AnswerEvidence.student_answer_id, AnswerEvidence.rubric_id),
             ).all()
+            rubric_ids_by_question = self._rubric_ids_by_question(db, task_id)
 
             evidence_by_answer: dict[int, list[AnswerEvidenceRead]] = {}
             for item in evidence_items:
@@ -127,7 +140,10 @@ class EvidenceExtractorService:
                     answer_confidence=answer.confidence,
                     evidence_items=answer_evidence,
                 )
-                if extraction_started and self._question_evidence_complete(question_read):
+                if extraction_started and self._question_evidence_complete(
+                    question_read,
+                    rubric_ids_by_question.get(answer.question_id, set()),
+                ):
                     completed_answers += 1
                 questions_by_submission.setdefault(answer.student_submission_id, []).append(question_read)
 
@@ -139,7 +155,10 @@ class EvidenceExtractorService:
                         [
                             question
                             for question in questions
-                            if self._question_evidence_complete(question)
+                            if self._question_evidence_complete(
+                                question,
+                                rubric_ids_by_question.get(question.question_id, set()),
+                            )
                         ],
                     )
                     if questions and completed_questions >= len(questions):
@@ -180,6 +199,8 @@ class EvidenceExtractorService:
         with self._running_lock:
             if task_id in self._running_task_ids:
                 raise HTTPException(status_code=409, detail="证据提取正在进行中，请稍候")
+            if any(running_task_id == task_id for running_task_id, _ in self._running_submission_keys):
+                raise HTTPException(status_code=409, detail="单个学生证据正在提取中，请稍候")
             self._running_task_ids.add(task_id)
 
         snapshot = self.get_snapshot(task_id)
@@ -259,8 +280,15 @@ class EvidenceExtractorService:
             with SessionLocal() as db:
                 answers = db.scalars(
                     select(StudentAnswer)
+                    .join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
                     .where(StudentAnswer.task_id == task_id)
-                    .order_by(StudentAnswer.student_submission_id, StudentAnswer.question_id),
+                    .order_by(
+                        StudentSubmission.student_no == "",
+                        StudentSubmission.student_no,
+                        StudentSubmission.student_name,
+                        StudentSubmission.id,
+                        StudentAnswer.question_id,
+                    ),
                 ).all()
                 eligible_submission_ids = self._eligible_submission_ids(db, task_id, answers)
                 answers = [
@@ -268,15 +296,27 @@ class EvidenceExtractorService:
                     for answer in answers
                     if answer.student_submission_id in eligible_submission_ids
                 ]
+                eligible_submission_id_order: list[int] = []
+                for answer in answers:
+                    if answer.student_submission_id not in eligible_submission_id_order:
+                        eligible_submission_id_order.append(answer.student_submission_id)
                 if force:
                     self._clear_after_evidence_extraction(db, task_id)
-                answers_to_process = self._answers_needing_evidence(db, task_id, answers, force=force)
+                rubric_ids_by_question = self._rubric_ids_by_question(db, task_id)
+                answers_to_process = self._answers_needing_evidence(
+                    db,
+                    task_id,
+                    answers,
+                    force=force,
+                    rubric_ids_by_question=rubric_ids_by_question,
+                )
                 answers_by_submission: dict[int, list[int]] = {
                     submission_id: []
-                    for submission_id in eligible_submission_ids
+                    for submission_id in eligible_submission_id_order
                 }
                 for answer in answers_to_process:
                     answers_by_submission.setdefault(answer.student_submission_id, []).append(answer.id)
+                pending_answer_count = sum(len(answer_ids) for answer_ids in answers_by_submission.values())
                 task = db.get(GradingTask, task_id)
                 if task is not None:
                     task.status = GradingTaskStatus.ANSWERS_EXTRACTED
@@ -288,32 +328,33 @@ class EvidenceExtractorService:
                 {
                     "stage": "extract_evidence",
                     "total_answers": len(answers),
-                    "pending_answers": sum(len(answer_ids) for answer_ids in answers_by_submission.values()),
-                    "completed_answers": 0,
+                    "pending_answers": pending_answer_count,
+                    "completed_answers": max(0, len(answers) - pending_answer_count),
                     "max_workers": max_workers,
                     "force": force,
                 },
             )
 
-            completed_answers = 0
+            completed_answers = max(0, len(answers) - pending_answer_count)
+            failed_submissions: list[dict[str, str | int]] = []
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
                     executor.submit(
-                        self._extract_submission_answers,
+                        self._extract_submission_answers_for_batch,
                         task_id,
                         submission_id,
                         answer_ids,
                         progress_channel,
                     )
                     for submission_id, answer_ids in answers_by_submission.items()
+                    if answer_ids
                 ]
                 for future in as_completed(futures):
-                    processed_count = 0
-                    try:
-                        processed_count = future.result()
-                    except Exception:
-                        pass
-                    completed_answers += processed_count
+                    result = future.result()
+                    completed_answers += int(result.get("processed_count") or 0)
+                    failed_submission = result.get("failed_submission")
+                    if failed_submission:
+                        failed_submissions.append(failed_submission)
                     self._publish(
                         progress_channel,
                         "answer_progress",
@@ -327,16 +368,31 @@ class EvidenceExtractorService:
             with SessionLocal() as db:
                 task = db.get(GradingTask, task_id)
                 if task is not None:
-                    task.status = GradingTaskStatus.EVIDENCE_EXTRACTED
+                    task.status = (
+                        GradingTaskStatus.ANSWERS_EXTRACTED
+                        if failed_submissions
+                        else GradingTaskStatus.EVIDENCE_EXTRACTED
+                    )
                     db.commit()
-            self._publish(
-                progress_channel,
-                "stage_done",
-                {
-                    "stage": "extract_evidence",
-                    "answer_count": len(answers),
-                },
-            )
+            if failed_submissions:
+                self._publish(
+                    progress_channel,
+                    "stage_failed",
+                    {
+                        "stage": "extract_evidence",
+                        "message": f"{len(failed_submissions)} 名学生证据提取失败，请继续提取或单独重试",
+                        "failed_submissions": failed_submissions,
+                    },
+                )
+            else:
+                self._publish(
+                    progress_channel,
+                    "stage_done",
+                    {
+                        "stage": "extract_evidence",
+                        "answer_count": len(answers),
+                    },
+                )
         except Exception as exc:
             self._publish(
                 progress_channel,
@@ -426,6 +482,68 @@ class EvidenceExtractorService:
             with self._running_lock:
                 self._running_submission_keys.discard(submission_key)
 
+    def _extract_submission_answers_for_batch(
+        self,
+        task_id: int,
+        submission_id: int,
+        answer_ids: list[int],
+        progress_channel: str,
+    ) -> dict[str, int | dict[str, str | int] | None]:
+        student_name, student_no = self._submission_identity(submission_id)
+        self._publish(
+            progress_channel,
+            "student_started",
+            {
+                "stage": "extract_evidence",
+                "submission_id": submission_id,
+                "student_name": student_name,
+                "student_no": student_no,
+                "total_answers": len(answer_ids),
+                "completed_answers": 0,
+            },
+        )
+        try:
+            processed_count = self._extract_submission_answers(
+                task_id,
+                submission_id,
+                answer_ids,
+                progress_channel,
+            )
+            self._publish(
+                progress_channel,
+                "student_done",
+                {
+                    "stage": "extract_evidence",
+                    "submission_id": submission_id,
+                    "student_name": student_name,
+                    "student_no": student_no,
+                    "total_answers": len(answer_ids),
+                    "completed_answers": processed_count,
+                },
+            )
+            return {"processed_count": processed_count, "failed_submission": None}
+        except Exception as exc:
+            failed_submission = {
+                "submission_id": submission_id,
+                "student_name": student_name,
+                "student_no": student_no,
+                "message": str(exc),
+            }
+            self._publish(
+                progress_channel,
+                "student_failed",
+                {
+                    "stage": "extract_evidence",
+                    "submission_id": submission_id,
+                    "student_name": student_name,
+                    "student_no": student_no,
+                    "total_answers": len(answer_ids),
+                    "completed_answers": 0,
+                    "message": str(exc),
+                },
+            )
+            return {"processed_count": 0, "failed_submission": failed_submission}
+
     def _extract_submission_answers(
         self,
         task_id: int,
@@ -437,7 +555,7 @@ class EvidenceExtractorService:
         for answer_id in answer_ids:
             self._extract_one_answer(task_id, answer_id, progress_channel)
             processed_count += 1
-        processed_count += self._publish_skipped_answers_for_submission(
+        self._publish_skipped_answers_for_submission(
             task_id,
             submission_id,
             progress_channel,
@@ -608,18 +726,33 @@ class EvidenceExtractorService:
             )
             return submission_id
 
-    def _answers_needing_evidence(self, db, task_id: int, answers: list[StudentAnswer], force: bool) -> list[StudentAnswer]:
+    def _answers_needing_evidence(
+        self,
+        db,
+        task_id: int,
+        answers: list[StudentAnswer],
+        force: bool,
+        rubric_ids_by_question: dict[int, set[int]] | None = None,
+    ) -> list[StudentAnswer]:
         answers = [answer for answer in answers if not self._should_skip_evidence(answer)]
         if force:
             return answers
-        evidence_counts = {
-            answer_id: count
-            for answer_id, count in db.execute(
-                select(AnswerEvidence.student_answer_id, AnswerEvidence.id)
-                .where(AnswerEvidence.task_id == task_id),
-            ).all()
-        }
-        return [answer for answer in answers if answer.id not in evidence_counts]
+        rubric_ids_by_question = rubric_ids_by_question or self._rubric_ids_by_question(db, task_id)
+        evidence_rubric_ids_by_answer: dict[int, set[int]] = {}
+        for answer_id, rubric_id in db.execute(
+            select(AnswerEvidence.student_answer_id, AnswerEvidence.rubric_id)
+            .where(AnswerEvidence.task_id == task_id),
+        ).all():
+            evidence_rubric_ids_by_answer.setdefault(answer_id, set()).add(rubric_id)
+        return [
+            answer
+            for answer in answers
+            if not self._answer_evidence_complete(
+                answer,
+                evidence_rubric_ids_by_answer.get(answer.id, set()),
+                rubric_ids_by_question.get(answer.question_id, set()),
+            )
+        ]
 
     def _should_skip_evidence(self, answer: StudentAnswer) -> bool:
         return answer.extraction_status == AnswerExtractionStatus.MISSING or not answer.answer_text.strip()
@@ -643,28 +776,71 @@ class EvidenceExtractorService:
     def _question_skips_evidence(self, question: EvidenceExtractionQuestionRead) -> bool:
         return question.extraction_status == AnswerExtractionStatus.MISSING.value or not question.answer_text.strip()
 
-    def _question_evidence_complete(self, question: EvidenceExtractionQuestionRead) -> bool:
+    def _question_evidence_complete(
+        self,
+        question: EvidenceExtractionQuestionRead,
+        expected_rubric_ids: set[int] | None = None,
+    ) -> bool:
         if question.evidence_items:
-            return True
+            if not expected_rubric_ids:
+                return True
+            evidence_rubric_ids = {item.rubric_id for item in question.evidence_items}
+            return expected_rubric_ids.issubset(evidence_rubric_ids)
         return self._question_skips_evidence(question)
 
+    def _answer_evidence_complete(
+        self,
+        answer: StudentAnswer,
+        evidence_rubric_ids: set[int],
+        expected_rubric_ids: set[int],
+    ) -> bool:
+        if self._should_skip_evidence(answer):
+            return True
+        if not expected_rubric_ids:
+            return bool(evidence_rubric_ids)
+        return expected_rubric_ids.issubset(evidence_rubric_ids)
+
+    def _rubric_ids_by_question(self, db, task_id: int) -> dict[int, set[int]]:
+        rubric_ids_by_question: dict[int, set[int]] = {}
+        for question_id, rubric_id in db.execute(
+            select(QuestionRubric.question_id, QuestionRubric.id)
+            .join(Question, Question.id == QuestionRubric.question_id)
+            .where(Question.task_id == task_id),
+        ).all():
+            rubric_ids_by_question.setdefault(question_id, set()).add(rubric_id)
+        return rubric_ids_by_question
+
+    def _submission_identity(self, submission_id: int) -> tuple[str, str]:
+        with SessionLocal() as db:
+            submission = db.get(StudentSubmission, submission_id)
+            if submission is None:
+                return "", ""
+            return submission.student_name, submission.student_no or ""
+
     def _eligible_submission_ids(self, db, task_id: int, answers: list[StudentAnswer]) -> set[int]:
-        question_count = db.scalar(
-            select(Question.id).where(Question.task_id == task_id).limit(1),
-        )
-        if question_count is None:
-            return set()
-        total_questions = len({
+        required_question_ids = {
             question_id
             for question_id, in db.execute(select(Question.id).where(Question.task_id == task_id)).all()
-        })
+        }
+        if not required_question_ids:
+            return set()
         answers_by_submission: dict[int, list[StudentAnswer]] = {}
         for answer in answers:
+            if answer.question_id not in required_question_ids:
+                continue
             answers_by_submission.setdefault(answer.student_submission_id, []).append(answer)
         return {
             submission_id
             for submission_id, submission_answers in answers_by_submission.items()
-            if len(submission_answers) >= total_questions
+            if not any(
+                answer.extraction_status == AnswerExtractionStatus.EXTRACT_ERROR
+                for answer in submission_answers
+            )
+            if {
+                answer.question_id
+                for answer in submission_answers
+                if answer.extraction_status != AnswerExtractionStatus.EXTRACT_ERROR
+            } == required_question_ids
         }
 
     def _clear_after_evidence_extraction(self, db, task_id: int) -> None:

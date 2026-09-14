@@ -312,8 +312,15 @@ class GradingService:
             db.commit()
             results = db.scalars(
                 select(GradingResult)
+                .join(StudentSubmission, StudentSubmission.id == GradingResult.student_submission_id)
                 .where(GradingResult.task_id == task_id)
-                .order_by(GradingResult.student_submission_id, GradingResult.question_id),
+                .order_by(
+                    StudentSubmission.student_no == "",
+                    StudentSubmission.student_no,
+                    StudentSubmission.student_name,
+                    StudentSubmission.id,
+                    GradingResult.question_id,
+                ),
             ).all()
             return [self._to_grading_result_read(result) for result in results]
 
@@ -630,7 +637,16 @@ class GradingService:
         )
         if submission_id is not None:
             query = query.where(StudentAnswer.student_submission_id == submission_id)
-        answers = db.scalars(query.order_by(StudentAnswer.student_submission_id, StudentAnswer.id)).all()
+        query = query.join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
+        answers = db.scalars(
+            query.order_by(
+                StudentSubmission.student_no == "",
+                StudentSubmission.student_no,
+                StudentSubmission.student_name,
+                StudentSubmission.id,
+                StudentAnswer.id,
+            ),
+        ).all()
         existing_result_answer_ids = set()
         if not force:
             existing_result_answer_ids = {
@@ -673,8 +689,15 @@ class GradingService:
         }
         answers = db.scalars(
             select(StudentAnswer)
+            .join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
             .where(StudentAnswer.task_id == task_id)
-            .order_by(StudentAnswer.student_submission_id, StudentAnswer.question_id),
+            .order_by(
+                StudentSubmission.student_no == "",
+                StudentSubmission.student_no,
+                StudentSubmission.student_name,
+                StudentSubmission.id,
+                StudentAnswer.question_id,
+            ),
         ).all()
         ready_ids = []
         for answer in answers:
@@ -776,12 +799,19 @@ class GradingService:
     def _ensure_missing_answer_results(self, db, task_id: int) -> None:
         missing_answers = db.scalars(
             select(StudentAnswer)
+            .join(StudentSubmission, StudentSubmission.id == StudentAnswer.student_submission_id)
             .where(StudentAnswer.task_id == task_id)
             .where(
                 (StudentAnswer.extraction_status == AnswerExtractionStatus.MISSING)
                 | (StudentAnswer.answer_text == "")
             )
-            .order_by(StudentAnswer.student_submission_id, StudentAnswer.question_id),
+            .order_by(
+                StudentSubmission.student_no == "",
+                StudentSubmission.student_no,
+                StudentSubmission.student_name,
+                StudentSubmission.id,
+                StudentAnswer.question_id,
+            ),
         ).all()
         self._upsert_missing_answer_results(db, task_id, missing_answers)
 

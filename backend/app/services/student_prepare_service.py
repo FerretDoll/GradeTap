@@ -52,7 +52,12 @@ class StudentPrepareService:
             students = db.scalars(
                 select(ClassStudent)
                 .where(ClassStudent.class_group_id == class_group.id)
-                .order_by(ClassStudent.id),
+                .order_by(
+                    ClassStudent.student_no == "",
+                    ClassStudent.student_no,
+                    ClassStudent.student_name,
+                    ClassStudent.id,
+                ),
             ).all()
             if not students:
                 raise HTTPException(status_code=400, detail="该班级暂无学生，请先维护学生名单")

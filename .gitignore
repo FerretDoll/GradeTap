@@ -27,4 +27,6 @@ reports/
 
 # Editors
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

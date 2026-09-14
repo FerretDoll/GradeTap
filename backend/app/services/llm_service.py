@@ -31,25 +31,32 @@ class LLMService:
 
         last_error: Exception | None = None
         for _ in range(retries):
-            raw_text = self._chat_completion(
-                prompt=json_prompt,
-                settings=settings,
-                response_format={"type": "json_object"},
-            )
             try:
-                return self.parse_json_response(raw_text)
-            except json.JSONDecodeError as exc:
-                last_error = exc
-                repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
-                repaired_text = self._chat_completion(
-                    prompt=repair_prompt,
+                raw_text = self._chat_completion(
+                    prompt=json_prompt,
                     settings=settings,
                     response_format={"type": "json_object"},
                 )
                 try:
-                    return self.parse_json_response(repaired_text)
-                except json.JSONDecodeError as repair_exc:
-                    last_error = repair_exc
+                    return self.parse_json_response(raw_text)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
+                    repaired_text = self._chat_completion(
+                        prompt=repair_prompt,
+                        settings=settings,
+                        response_format={"type": "json_object"},
+                    )
+                    try:
+                        return self.parse_json_response(repaired_text)
+                    except json.JSONDecodeError as repair_exc:
+                        last_error = repair_exc
+            except (HTTPError, URLError, TimeoutError, RuntimeError, ValueError) as exc:
+                last_error = exc
+        if isinstance(last_error, (HTTPError, URLError, TimeoutError)):
+            raise RuntimeError("LLM request failed due to a network interruption. Please retry.") from last_error
+        if isinstance(last_error, RuntimeError):
+            raise last_error
         raise ValueError("LLM did not return valid JSON") from last_error
 
     def chat_json_stream(
@@ -68,28 +75,37 @@ class LLMService:
 
         last_error: Exception | None = None
         for _ in range(retries):
-            raw_text = self._chat_completion_stream(
-                prompt=json_prompt,
-                settings=settings,
-                response_format={"type": "json_object"},
-                on_delta=on_delta,
-            )
             try:
-                return self.parse_json_response(raw_text)
-            except json.JSONDecodeError as exc:
-                last_error = exc
-                if on_delta:
-                    on_delta("\n\n[系统] JSON 格式校验失败，正在请求模型修复格式...\n")
-                repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
-                repaired_text = self._chat_completion(
-                    prompt=repair_prompt,
+                raw_text = self._chat_completion_stream(
+                    prompt=json_prompt,
                     settings=settings,
                     response_format={"type": "json_object"},
+                    on_delta=on_delta,
                 )
                 try:
-                    return self.parse_json_response(repaired_text)
-                except json.JSONDecodeError as repair_exc:
-                    last_error = repair_exc
+                    return self.parse_json_response(raw_text)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    if on_delta:
+                        on_delta("\n\n[系统] JSON 格式校验失败，正在请求模型修复格式...\n")
+                    repair_prompt = self._build_json_repair_prompt(raw_text, schema_text)
+                    repaired_text = self._chat_completion(
+                        prompt=repair_prompt,
+                        settings=settings,
+                        response_format={"type": "json_object"},
+                    )
+                    try:
+                        return self.parse_json_response(repaired_text)
+                    except json.JSONDecodeError as repair_exc:
+                        last_error = repair_exc
+            except (HTTPError, URLError, TimeoutError, RuntimeError, ValueError) as exc:
+                last_error = exc
+                if on_delta:
+                    on_delta("\n\n[系统] 模型连接中断，正在重试...\n")
+        if isinstance(last_error, (HTTPError, URLError, TimeoutError)):
+            raise RuntimeError("LLM request failed due to a network interruption. Please retry.") from last_error
+        if isinstance(last_error, RuntimeError):
+            raise last_error
         raise ValueError("LLM did not return valid JSON") from last_error
 
     def chat_text(self, prompt: str, max_retries: int | None = None) -> str:
@@ -152,6 +168,8 @@ class LLMService:
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"LLM provider returned HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise RuntimeError(f"LLM provider connection interrupted: {exc}") from exc
 
         choices = response_payload.get("choices") or []
         if not choices:
@@ -219,6 +237,8 @@ class LLMService:
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"LLM provider returned HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise RuntimeError(f"LLM provider connection interrupted: {exc}") from exc
 
         content = "".join(chunks).strip()
         if not content:
