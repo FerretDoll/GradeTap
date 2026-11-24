@@ -9,6 +9,8 @@ from openpyxl import load_workbook
 from sqlalchemy import func, select
 
 from app.db.models import ClassGroup, ClassStudent
+from app.db.models import Offering, GradingTask
+from app.services.access import error
 from app.db.session import SessionLocal
 from app.schemas.class_group import (
     ClassGroupCreate,
@@ -26,9 +28,10 @@ NO_HEADERS = {"学号", "学生学号", "学生编号", "编号", "studentno", "
 
 
 class ClassGroupService:
-    def create_class_group(self, payload: ClassGroupCreate) -> ClassGroupRead:
+    def create_class_group(self, payload: ClassGroupCreate, owner_id: int) -> ClassGroupRead:
         with SessionLocal() as db:
             class_group = ClassGroup(
+                owner_id=owner_id,
                 class_name=payload.class_name,
                 note=payload.note,
                 student_count=0,
@@ -38,9 +41,9 @@ class ClassGroupService:
             db.refresh(class_group)
             return self._to_read_schema(class_group)
 
-    def list_class_groups(self) -> list[ClassGroupRead]:
+    def list_class_groups(self, owner_id: int) -> list[ClassGroupRead]:
         with SessionLocal() as db:
-            class_groups = db.scalars(select(ClassGroup).order_by(ClassGroup.id.desc())).all()
+            class_groups = db.scalars(select(ClassGroup).where(ClassGroup.owner_id == owner_id).order_by(ClassGroup.id.desc())).all()
             return [self._to_read_schema(class_group) for class_group in class_groups]
 
     def get_class_group(self, class_group_id: int) -> Optional[ClassGroupRead]:
@@ -64,6 +67,8 @@ class ClassGroupService:
 
     def delete_class_group(self, class_group_id: int) -> None:
         with SessionLocal() as db:
+            if db.scalar(select(Offering.id).where(Offering.class_group_id == class_group_id).limit(1)):
+                raise error(409, "in_use", "记录正在使用中")
             class_group = db.get(ClassGroup, class_group_id)
             if class_group is None:
                 raise HTTPException(status_code=404, detail="Class not found")

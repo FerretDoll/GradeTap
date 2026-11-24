@@ -22,6 +22,7 @@ from app.db.models import (
     TeacherRevision,
     UploadedFile,
 )
+from app.services.history_service import preserve_evaluation
 from app.db.session import SessionLocal
 from app.models.file import FileRole
 from app.models.task import GradingTaskStatus
@@ -223,6 +224,7 @@ class QuestionAnalyzerService:
             progress_event_service.publish(channel, event, data)
 
     def _clear_after_question_analysis(self, db, task_id: int) -> None:
+        preserve_evaluation(db, task_id, "analyze_questions")
         question_ids = select(Question.id).where(Question.task_id == task_id)
         grading_result_ids = select(GradingResult.id).where(GradingResult.task_id == task_id)
         answer_group_ids = select(AnswerGroup.id).where(AnswerGroup.task_id == task_id)

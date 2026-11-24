@@ -4,7 +4,7 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 SQLAlchemy>=2.0.0
-PyMySQL>=1.1.0
+PyMySQL[rsa]>=1.1.0
 python-multipart>=0.0.9
 celery>=5.4.0
 redis>=5.0.0
@@ -13,3 +13,7 @@ pymupdf>=1.24.0
 pdfplumber>=0.11.0
 pandas>=2.2.0
 openpyxl>=3.1.0
+
+alembic>=1.13
+argon2-cffi>=23.1
+email-validator>=2.1

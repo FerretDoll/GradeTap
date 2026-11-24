@@ -23,7 +23,8 @@ from app.db.models import (
     StudentSubmission,
     TeacherRevision,
 )
-from app.db.session import SessionLocal, engine
+from app.services.history_service import preserve_evaluation
+from app.db.session import SessionLocal
 from app.models.answer import AnswerExtractionStatus
 from app.models.grading import GradingStatus, ReviewPriority, ReviewStatus
 from app.models.task import GradingTaskStatus
@@ -78,6 +79,7 @@ class GradingService:
             return []
         self._validate_evidence_coverage(rubrics, student_answers)
         cache_context = self._build_cache_context(question, rubrics)
+        cache_context["task_id"] = str(task_id)
         answers_by_cache_key = self._group_answers_by_cache_key(student_answers, cache_context)
         cached_payloads = self._load_cached_payloads(answers_by_cache_key.keys())
 
@@ -152,6 +154,23 @@ class GradingService:
             if answer.student_answer_id in results_by_answer_id
         ]
 
+    def grade_selected_answers(self, task_id, question_id, answer_ids):
+        with SessionLocal() as db:
+            question = db.get(Question, question_id)
+            if question is None or question.task_id != task_id:
+                raise ValueError("题目不属于此任务")
+            rubrics = db.scalars(select(QuestionRubric).where(QuestionRubric.question_id == question.id)).all()
+            answers = db.scalars(select(StudentAnswer).where(
+                StudentAnswer.task_id == task_id, StudentAnswer.question_id == question_id,
+                StudentAnswer.id.in_(answer_ids))).all()
+            if len(answers) != len(set(answer_ids)):
+                raise ValueError("答案不属于当前任务或题目")
+            inputs = [self._to_student_answer_for_grading(answer, self._answer_evidence_for_grading(db, answer),
+                      db.get(StudentSubmission, answer.student_submission_id)) for answer in answers]
+            question_data = self._to_question_read(question, rubrics)
+            rubric_data = [self._to_rubric_read(rubric) for rubric in rubrics]
+        return self.grade_by_question(task_id, question_data, rubric_data, inputs)
+
     def save_grading_results(
         self,
         task_id: int,
@@ -175,6 +194,7 @@ class GradingService:
             }
             existing_ids = [result.id for result in existing_results]
             if existing_ids:
+                preserve_evaluation(db, task_id, "grade_by_question")
                 db.execute(delete(GradingDeduction).where(GradingDeduction.grading_result_id.in_(existing_ids)))
                 db.execute(delete(GradingReflection).where(GradingReflection.grading_result_id.in_(existing_ids)))
                 db.execute(delete(TeacherRevision).where(TeacherRevision.grading_result_id.in_(existing_ids)))
@@ -733,6 +753,7 @@ class GradingService:
         )
 
     def _clear_after_grading(self, db, task_id: int) -> None:
+        preserve_evaluation(db, task_id, "grade_by_question")
         result_ids = select(GradingResult.id).where(GradingResult.task_id == task_id)
         db.execute(delete(GradingDeduction).where(GradingDeduction.grading_result_id.in_(result_ids)))
         db.execute(delete(GradingReflection).where(GradingReflection.grading_result_id.in_(result_ids)))
@@ -740,6 +761,7 @@ class GradingService:
         db.execute(delete(GradingResult).where(GradingResult.task_id == task_id))
 
     def _clear_after_grading_for_submission(self, db, task_id: int, submission_id: int) -> None:
+        preserve_evaluation(db, task_id, "grade_by_question")
         result_ids = select(GradingResult.id).where(
             GradingResult.task_id == task_id,
             GradingResult.student_submission_id == submission_id,
@@ -951,17 +973,19 @@ class GradingService:
     ) -> dict[str, list[StudentAnswerForGrading]]:
         grouped: dict[str, list[StudentAnswerForGrading]] = {}
         for answer in student_answers:
-            cache_key = self._build_cache_key(answer.answer_text, cache_context)
+            cache_key = self._build_cache_key(answer, cache_context)
             grouped.setdefault(cache_key, []).append(answer)
         return grouped
 
-    def _build_cache_key(self, answer_text: str, cache_context: dict[str, str]) -> str:
+    def _build_cache_key(self, answer: StudentAnswerForGrading, cache_context: dict[str, str]) -> str:
         payload = {
             "kind": "grade_by_question",
+            "task_id": cache_context["task_id"],
             "version": 1,
             "question_fingerprint": cache_context["question_fingerprint"],
             "rubric_fingerprint": cache_context["rubric_fingerprint"],
-            "answer_hash": self._hash_text(answer_text),
+            "answer_hash": self._hash_text(answer.answer_text),
+            "evidence": [item.model_dump() for item in answer.structured_evidence],
         }
         return self._hash_json(payload)
 
@@ -969,7 +993,6 @@ class GradingService:
         cache_keys = list(cache_keys)
         if not cache_keys:
             return {}
-        self._ensure_cache_schema()
         with SessionLocal() as db:
             rows = db.scalars(
                 select(GradingCache).where(GradingCache.cache_key.in_(cache_keys)),
@@ -983,7 +1006,6 @@ class GradingService:
     def _save_cached_payloads(self, cache_rows: list[dict]) -> None:
         if not cache_rows:
             return
-        self._ensure_cache_schema()
         with SessionLocal() as db:
             existing_rows = db.scalars(
                 select(GradingCache).where(
@@ -1071,8 +1093,6 @@ class GradingService:
         encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return self._hash_text(encoded)
 
-    def _ensure_cache_schema(self) -> None:
-        GradingCache.__table__.create(bind=engine, checkfirst=True)
 
     def _to_question_read(self, question: Question, rubrics: list[QuestionRubric]) -> QuestionRead:
         return QuestionRead(

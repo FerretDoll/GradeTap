@@ -2,8 +2,15 @@ import { apiClient } from "./client";
 
 const LONG_RUNNING_TASK_TIMEOUT = 180000;
 
-export async function listTasks() {
-  const response = await apiClient.get("/tasks");
+export async function listTasks({ offeringId, includeArchived = false } = {}) {
+  const params = { include_archived: includeArchived };
+  if (offeringId) params.offering_id = offeringId;
+  const response = await apiClient.get("/tasks", { params });
+  return response.data;
+}
+
+export async function archiveTask(taskId) {
+  const response = await apiClient.post(`/tasks/${taskId}/archive`);
   return response.data;
 }
 

@@ -7,12 +7,12 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -40,6 +40,8 @@ class TimestampMixin:
 
 class Course(TimestampMixin, Base):
     __tablename__ = "course"
+
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("account.id", name="fk_course_owner"), index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     course_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -130,6 +132,8 @@ class CourseAssignmentQuestionRubric(TimestampMixin, Base):
 class ClassGroup(TimestampMixin, Base):
     __tablename__ = "class"
 
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("account.id", name="fk_class_owner"), index=True)
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     class_name: Mapped[str] = mapped_column(String(255), nullable=False)
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
@@ -162,6 +166,13 @@ class SystemSetting(TimestampMixin, Base):
 
 class GradingTask(TimestampMixin, Base):
     __tablename__ = "grading_task"
+    __table_args__ = {"sqlite_autoincrement": True}
+    offering_id: Mapped[int | None] = mapped_column(ForeignKey("offering.id", name="fk_task_offering"), index=True)
+    class_group_id: Mapped[int | None] = mapped_column(ForeignKey("class.id", name="fk_task_class_group"), index=True)
+    course_id: Mapped[int | None] = mapped_column(ForeignKey("course.id", name="fk_task_course"), index=True)
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("course_assignment.id", name="fk_task_assignment"), index=True)
+    submission_round: Mapped[int] = mapped_column(Integer, server_default="1")
+    archived_at: Mapped[DateTime | None] = mapped_column(DateTime)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -182,6 +193,7 @@ class GradingTask(TimestampMixin, Base):
 
 class UploadedFile(TimestampMixin, Base):
     __tablename__ = "uploaded_file"
+    submission_round: Mapped[int] = mapped_column(Integer, server_default="1")
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), nullable=False)
@@ -434,6 +446,8 @@ class AdaptiveGradingRule(TimestampMixin, Base):
 class AuditLog(TimestampMixin, Base):
     __tablename__ = "audit_log"
 
+    deleted_task_id: Mapped[int | None] = mapped_column(Integer)
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int | None] = mapped_column(ForeignKey("grading_task.id"), nullable=True)
     actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -441,3 +455,59 @@ class AuditLog(TimestampMixin, Base):
     target_type: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detail: Mapped[dict | str | None] = mapped_column(JSON, nullable=True)
+
+
+class Account(TimestampMixin, Base):
+    __tablename__ = "account"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), unique=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    platform_role: Mapped[str] = mapped_column(String(20), default="teacher")
+    account_status: Mapped[str] = mapped_column(String(32), default="pending_verification")
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(default=1)
+    verification_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    verification_expires: Mapped[DateTime | None] = mapped_column(DateTime)
+    __mapper_args__ = {"version_id_col": version}
+
+
+class LoginSession(Base):
+    __tablename__ = "login_session"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("account.id"), index=True)
+    expires_at: Mapped[DateTime] = mapped_column(DateTime)
+
+
+class Offering(TimestampMixin, Base):
+    __tablename__ = "offering"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("account.id"), index=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("course.id"))
+    class_group_id: Mapped[int] = mapped_column(ForeignKey("class.id"))
+    term: Mapped[str] = mapped_column(String(64))
+    __table_args__ = (UniqueConstraint("owner_id", "course_id", "class_group_id", "term"),)
+
+
+class EvaluationVersion(TimestampMixin, Base):
+    __tablename__ = "evaluation_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), index=True)
+    submission_round: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(64))
+    has_review: Mapped[bool] = mapped_column(Boolean)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class GradeRelease(TimestampMixin, Base):
+    __tablename__ = "grade_release"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("grading_task.id"), index=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("account.id"))
+    workbook: Mapped[str] = mapped_column(JSON)

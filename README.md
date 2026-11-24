@@ -88,7 +88,7 @@ parse_files
 frontend: Vue 3 + Vite + Element Plus + Pinia + Axios
 backend:  Python FastAPI + SQLAlchemy + Pydantic
 tasks:    Celery + Redis
-database: MySQL / PostgreSQL
+database: MySQL
 files:    MVP 使用本地文件系统，后续可替换为 MinIO / OSS
 llm:      统一通过 LLMService 调用，可接入 DeepSeek 等模型服务
 export:   pandas + openpyxl
@@ -119,7 +119,13 @@ GradeTap/
       components/   # 可复用组件
     package.json
   AGENTS.md         # 项目记忆与开发约定
-  大模型自动批改作业网站_架构设计.md
+  docs/
+    README.md       # 文档导航
+    01_开发文档/
+    02_架构设计/
+    03_项目申报/
+    04_案例与演示/
+    05_图件/
 ```
 
 ## 一键启动（推荐）
@@ -137,6 +143,8 @@ pip install -r requirements.txt
 cd ../frontend
 corepack pnpm install
 ```
+
+开发与正式部署使用腾讯云 MySQL。开发机通过 SSH 别名 `gradetap` 访问独立开发库，连接参数从未提交的 `backend/.env` 读取。根目录启动脚本会建立或复用本地 13306 隧道。详见[数据库与联调配置](docs/01_开发文档/GradeTap_批次AB后端联调.md)。
 
 之后在项目根目录执行以下任一命令，即可同时启动前后端：
 
@@ -289,5 +297,7 @@ API Key: 从 DeepSeek Platform 创建的密钥
 
 ## 参考文档
 
-- `AGENTS.md`：项目记忆、架构约定、数据模型、API 设计和验收标准。
-- `大模型自动批改作业网站_架构设计.md`：详细架构设计。
+- [项目文档目录](docs/README.md)：开发文档、架构设计、项目申报、案例与演示、图件的统一入口。
+- [AGENTS.md](AGENTS.md)：项目记忆、架构约定、数据模型、API 设计和验收标准。
+- [架构设计](docs/02_架构设计/大模型自动批改作业网站_架构设计.md)：详细架构设计。
+- [旧版框架升级修改说明](docs/02_架构设计/AI作业批改系统_旧版框架升级修改说明.md)：证据-量规驱动的升级要求。

@@ -21,55 +21,55 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.models.grading import ReviewStatus
-from app.models.task import GradingTaskStatus
 from app.schemas.export import ExportTeacherRevision
 
 
 def export_grades_to_excel(task_id: int, teacher_revisions: list[ExportTeacherRevision] | None = None) -> bytes:
     with SessionLocal() as db:
-        task = db.get(GradingTask, task_id)
-        if task is None:
-            raise ValueError("Task not found")
+        return render_grades(db, task_id, teacher_revisions)
 
-        questions = db.scalars(
-            select(Question)
-            .where(Question.task_id == task_id)
-            .order_by(Question.sort_order, Question.id),
-        ).all()
-        submissions = db.scalars(
-            select(StudentSubmission)
-            .where(StudentSubmission.task_id == task_id)
-            .order_by(
-                StudentSubmission.student_no == "",
-                StudentSubmission.student_no,
-                StudentSubmission.student_name,
-                StudentSubmission.id,
-            ),
-        ).all()
-        results = db.scalars(
-            select(GradingResult)
-            .where(GradingResult.task_id == task_id)
-            .order_by(GradingResult.student_submission_id, GradingResult.question_id),
-        ).all()
-        if not results:
-            raise ValueError("No grading results to export")
 
-        deductions = db.scalars(
-            select(GradingDeduction)
-            .where(GradingDeduction.grading_result_id.in_([result.id for result in results])),
-        ).all()
-        evidence_items = db.scalars(
-            select(AnswerEvidence)
-            .where(AnswerEvidence.task_id == task_id),
-        ).all()
-        stored_revisions = db.scalars(
-            select(TeacherRevision)
-            .where(TeacherRevision.task_id == task_id)
-            .order_by(TeacherRevision.grading_result_id, TeacherRevision.id.desc()),
-        ).all()
+def render_grades(db, task_id, teacher_revisions=None):
+    task = db.get(GradingTask, task_id)
+    if task is None:
+        raise ValueError("Task not found")
 
-        task.status = GradingTaskStatus.EXPORTED
-        db.commit()
+    questions = db.scalars(
+        select(Question)
+        .where(Question.task_id == task_id)
+        .order_by(Question.sort_order, Question.id),
+    ).all()
+    submissions = db.scalars(
+        select(StudentSubmission)
+        .where(StudentSubmission.task_id == task_id)
+        .order_by(
+            StudentSubmission.student_no == "",
+            StudentSubmission.student_no,
+            StudentSubmission.student_name,
+            StudentSubmission.id,
+        ),
+    ).all()
+    results = db.scalars(
+        select(GradingResult)
+        .where(GradingResult.task_id == task_id)
+        .order_by(GradingResult.student_submission_id, GradingResult.question_id),
+    ).all()
+    if not results:
+        raise ValueError("No grading results to export")
+
+    deductions = db.scalars(
+        select(GradingDeduction)
+        .where(GradingDeduction.grading_result_id.in_([result.id for result in results])),
+    ).all()
+    evidence_items = db.scalars(
+        select(AnswerEvidence)
+        .where(AnswerEvidence.task_id == task_id),
+    ).all()
+    stored_revisions = db.scalars(
+        select(TeacherRevision)
+        .where(TeacherRevision.task_id == task_id)
+        .order_by(TeacherRevision.grading_result_id, TeacherRevision.id.desc()),
+    ).all()
 
     latest_stored_revisions: dict[int, TeacherRevision] = {}
     for revision in stored_revisions:

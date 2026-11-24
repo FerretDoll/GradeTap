@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
 from pydantic import ValidationError
-from sqlalchemy import delete, func, inspect, select, text
+from sqlalchemy import delete, func, select
 
 from app.core.config import settings
 from app.db.models import (
@@ -18,7 +18,9 @@ from app.db.models import (
     CourseAssignmentQuestion,
     CourseAssignmentQuestionRubric,
 )
-from app.db.session import Base, SessionLocal
+from app.db.models import Offering, GradingTask
+from app.services.access import error
+from app.db.session import SessionLocal
 from app.models.file import FileRole
 from app.schemas.course import (
     CourseAssignmentCreate,
@@ -41,10 +43,10 @@ ASSIGNMENT_FILE_ROLES = {FileRole.REQUIREMENT, FileRole.REFERENCE_ANSWER}
 
 
 class CourseService:
-    def create_course(self, payload: CourseCreate) -> CourseRead:
-        self._ensure_assignment_schema()
+    def create_course(self, payload: CourseCreate, owner_id: int) -> CourseRead:
         with SessionLocal() as db:
             course = Course(
+                owner_id=owner_id,
                 course_name=payload.course_name,
                 description=payload.description,
                 assignment_count=0,
@@ -54,14 +56,12 @@ class CourseService:
             db.refresh(course)
             return self._to_read_schema(course)
 
-    def list_courses(self) -> list[CourseRead]:
-        self._ensure_assignment_schema()
+    def list_courses(self, owner_id: int) -> list[CourseRead]:
         with SessionLocal() as db:
-            courses = db.scalars(select(Course).order_by(Course.id.desc())).all()
+            courses = db.scalars(select(Course).where(Course.owner_id == owner_id).order_by(Course.id.desc())).all()
             return [self._to_read_schema(course) for course in courses]
 
     def get_course(self, course_id: int) -> Optional[CourseRead]:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             course = db.get(Course, course_id)
             if course is None:
@@ -69,7 +69,6 @@ class CourseService:
             return self._to_read_schema(course)
 
     def update_course(self, course_id: int, payload: CourseUpdate) -> CourseRead:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             course = db.get(Course, course_id)
             if course is None:
@@ -82,8 +81,9 @@ class CourseService:
             return self._to_read_schema(course)
 
     def delete_course(self, course_id: int) -> None:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
+            if db.scalar(select(Offering.id).where(Offering.course_id == course_id).limit(1)):
+                raise error(409, "in_use", "记录正在使用中")
             course = db.get(Course, course_id)
             if course is None:
                 raise HTTPException(status_code=404, detail="Course not found")
@@ -98,7 +98,6 @@ class CourseService:
             db.commit()
 
     def create_assignment(self, course_id: int, payload: CourseAssignmentCreate) -> CourseAssignmentRead:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             course = db.get(Course, course_id)
             if course is None:
@@ -117,7 +116,6 @@ class CourseService:
             return self._to_assignment_read_schema(assignment, file_count=0, db=db)
 
     def list_assignments(self, course_id: int) -> list[CourseAssignmentRead]:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             course = db.get(Course, course_id)
             if course is None:
@@ -145,7 +143,6 @@ class CourseService:
         assignment_id: int,
         payload: CourseAssignmentUpdate,
     ) -> CourseAssignmentRead:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             assignment = self._get_assignment(db, course_id, assignment_id)
             update_data = payload.model_dump(exclude_unset=True)
@@ -157,8 +154,9 @@ class CourseService:
             return self._to_assignment_read_schema(assignment, file_count=file_count, db=db)
 
     def delete_assignment(self, course_id: int, assignment_id: int) -> None:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
+            if db.scalar(select(GradingTask.id).where(GradingTask.assignment_id == assignment_id).limit(1)):
+                raise error(409, "in_use", "记录正在使用中")
             assignment = self._get_assignment(db, course_id, assignment_id)
             files = db.scalars(
                 select(CourseAssignmentFile).where(CourseAssignmentFile.assignment_id == assignment_id),
@@ -179,7 +177,6 @@ class CourseService:
         file_role: FileRole,
         file: UploadFile,
     ) -> CourseAssignmentFileRead:
-        self._ensure_assignment_schema()
         if file_role not in ASSIGNMENT_FILE_ROLES:
             raise HTTPException(status_code=400, detail="课程作业仅支持作业文件和参考答案文件")
         if not file.filename:
@@ -225,7 +222,6 @@ class CourseService:
             return self._to_assignment_file_read_schema(assignment_file)
 
     def list_assignment_files(self, course_id: int, assignment_id: int) -> list[CourseAssignmentFileRead]:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             self._get_assignment(db, course_id, assignment_id)
             files = db.scalars(
@@ -236,7 +232,6 @@ class CourseService:
             return [self._to_assignment_file_read_schema(file) for file in files]
 
     def delete_assignment_file(self, course_id: int, assignment_id: int, file_id: int) -> None:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             self._get_assignment(db, course_id, assignment_id)
             assignment_file = db.get(CourseAssignmentFile, file_id)
@@ -247,7 +242,6 @@ class CourseService:
             db.commit()
 
     def parse_assignment_files(self, course_id: int, assignment_id: int) -> dict:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             self._get_assignment(db, course_id, assignment_id)
             files = db.scalars(
@@ -302,7 +296,6 @@ class CourseService:
             }
 
     def analyze_assignment_questions(self, course_id: int, assignment_id: int) -> dict:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             assignment = self._get_assignment(db, course_id, assignment_id)
             files = self._assignment_files(db, assignment_id)
@@ -367,7 +360,6 @@ class CourseService:
             return result
 
     def build_assignment_rubrics(self, course_id: int, assignment_id: int) -> dict:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             assignment = self._get_assignment(db, course_id, assignment_id)
             source_questions = self._assignment_questions_payload(db, assignment_id)
@@ -443,7 +435,6 @@ class CourseService:
             return result
 
     def list_assignment_questions(self, course_id: int, assignment_id: int) -> dict:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             assignment = self._get_assignment(db, course_id, assignment_id)
             questions = self._assignment_questions_payload(db, assignment_id)
@@ -464,7 +455,6 @@ class CourseService:
         assignment_id: int,
         payload: CourseAssignmentQuestionsUpdate,
     ) -> dict:
-        self._ensure_assignment_schema()
         with SessionLocal() as db:
             assignment = self._get_assignment(db, course_id, assignment_id)
             questions = payload.questions
@@ -549,28 +539,6 @@ class CourseService:
             if assignment_file.file_role == file_role and assignment_file.parsed_text.strip()
         )
 
-    def _ensure_assignment_schema(self) -> None:
-        table_name = CourseAssignment.__tablename__
-        with SessionLocal() as db:
-            Base.metadata.create_all(
-                bind=db.bind,
-                tables=[
-                    CourseAssignmentQuestion.__table__,
-                    CourseAssignmentQuestionRubric.__table__,
-                ],
-            )
-            existing_columns = {column["name"] for column in inspect(db.bind).get_columns(table_name)}
-            dialect = db.bind.dialect.name
-            column_specs = {
-                "questions_payload": "JSON NULL" if dialect == "mysql" else "TEXT NULL",
-                "rubrics_payload": "JSON NULL" if dialect == "mysql" else "TEXT NULL",
-                "rubric_confirmed": "BOOL NOT NULL DEFAULT 0" if dialect == "mysql" else "BOOLEAN NOT NULL DEFAULT 0",
-                "rubric_confirmed_at": "DATETIME NULL",
-            }
-            for column_name, column_type in column_specs.items():
-                if column_name not in existing_columns:
-                    db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-            db.commit()
 
     def _clear_assignment_question_records(self, db, assignment_id: int) -> None:
         assignment_question_ids = select(CourseAssignmentQuestion.id).where(

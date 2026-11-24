@@ -112,7 +112,7 @@ export function resolvePython(root) {
   }
 
   const condaPrefix = process.env.CONDA_PREFIX;
-  if (condaPrefix) {
+  if (condaPrefix && process.env.CONDA_DEFAULT_ENV !== "base") {
     const activePython = envPythonPath(condaPrefix);
     if (fs.existsSync(activePython)) {
       return {

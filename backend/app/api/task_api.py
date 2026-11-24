@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from typing import Union
+from base64 import b64decode
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.db.session import get_db
+from app.services.access import error
+from app.db.models import EvaluationVersion, GradeRelease
+from app.services.release_service import publish_grades
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from app.services.access import active_user
+from app.db.models import Account
+from fastapi import Request, Depends, APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
@@ -54,13 +63,18 @@ router = APIRouter()
 
 
 @router.post("", response_model=GradingTaskRead, status_code=status.HTTP_201_CREATED)
-def create_task(payload: GradingTaskCreate) -> GradingTaskRead:
-    return task_service.create_task(payload)
+def create_task(payload: GradingTaskCreate, user: Account = Depends(active_user)) -> GradingTaskRead:
+    return task_service.create_task(payload, user.id)
 
 
 @router.get("", response_model=list[GradingTaskRead])
-def list_tasks() -> list[GradingTaskRead]:
-    return task_service.list_tasks()
+def list_tasks(offering_id: int | None = None, include_archived: bool = False, user: Account = Depends(active_user)) -> list[GradingTaskRead]:
+    return task_service.list_tasks(user.id, offering_id, include_archived)
+
+
+@router.post("/{task_id}/archive", response_model=GradingTaskRead)
+def archive_task(task_id: int, user: Account = Depends(active_user)):
+    return task_service.archive(task_id, user.id)
 
 
 @router.get("/{task_id}", response_model=GradingTaskRead)
@@ -72,8 +86,8 @@ def get_task(task_id: int) -> GradingTaskRead:
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task(task_id: int) -> Response:
-    task_service.delete_task(task_id)
+def delete_task(task_id: int, user: Account = Depends(active_user)) -> Response:
+    task_service.delete_task(task_id, user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -114,10 +128,10 @@ def list_task_questions(task_id: int) -> list[QuestionRead]:
 
 
 @router.get("/{task_id}/events")
-def stream_task_events(task_id: int) -> StreamingResponse:
+def stream_task_events(task_id: int, request: Request) -> StreamingResponse:
     task_service.ensure_task_exists(task_id)
     return StreamingResponse(
-        progress_event_service.stream(f"task:{task_id}"),
+        progress_event_service.session_stream(f"task:{task_id}", request.cookies["gradetap_session"]),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -222,12 +236,8 @@ def extract_evidence_for_submission(
 def grade_by_question(task_id: int, payload: GradeByQuestionRequest) -> GradeByQuestionResponse:
     task_service.ensure_task_exists(task_id)
     try:
-        grading_results = grading_service.grade_by_question(
-            task_id=task_id,
-            question=payload.question,
-            rubrics=payload.rubrics,
-            student_answers=payload.student_answers,
-        )
+        grading_results = grading_service.grade_selected_answers(
+            task_id, payload.question.id, [answer.student_answer_id for answer in payload.student_answers])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     saved_results = grading_service.save_grading_results(task_id, grading_results)
@@ -287,6 +297,7 @@ def review_grading_result(
     task_id: int,
     result_id: int,
     payload: TeacherReviewUpdate,
+    user: Account = Depends(active_user),
 ) -> TeacherRevisionRead:
     task_service.ensure_task_exists(task_id)
     try:
@@ -297,7 +308,7 @@ def review_grading_result(
             final_comment=payload.final_comment,
             revision_reason=payload.revision_reason,
             review_status=payload.review_status,
-            teacher_id=payload.teacher_id,
+            teacher_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -315,15 +326,44 @@ def route_review(task_id: int) -> dict[str, Union[str, int]]:
     return {"task_id": task_id, "status": "queued", "stage": "route_review"}
 
 
+@router.get("/{task_id}/evaluation-versions")
+def list_versions(task_id: int, db: Session = Depends(get_db)):
+    versions = db.execute(select(EvaluationVersion.id, EvaluationVersion.submission_round,
+        EvaluationVersion.reason, EvaluationVersion.created_at).where(
+        EvaluationVersion.task_id == task_id).order_by(EvaluationVersion.id.desc())).mappings()
+    return [dict(row) for row in versions]
+
+
+@router.get("/{task_id}/evaluation-versions/{version_id}")
+def read_version(task_id: int, version_id: int, db: Session = Depends(get_db)):
+    version = db.get(EvaluationVersion, version_id)
+    if version is None or version.task_id != task_id:
+        raise error(404, "not_found", "评价版本不存在")
+    return {"id": version.id, "submission_round": version.submission_round, "snapshot": version.snapshot}
+
+
+@router.post("/{task_id}/releases", status_code=201)
+def release(task_id: int, user: Account = Depends(active_user), db: Session = Depends(get_db)):
+    return publish_grades(db, task_id, user.id)
+
+
 @router.post("/{task_id}/export-results")
-def export_results(task_id: int, payload: ExportResultsRequest | None = None) -> Response:
+def export_results(task_id: int, payload: ExportResultsRequest | None = None, db: Session = Depends(get_db)) -> Response:
     task_service.ensure_task_exists(task_id)
     try:
-        content = export_grades_to_excel(task_id, payload.teacher_revisions if payload else [])
+        if payload and payload.release_id:
+            release = db.get(GradeRelease, payload.release_id)
+            if release is None or release.task_id != task_id:
+                raise error(404, "not_found", "发布记录不存在")
+            content = b64decode(release.workbook)
+            label = f"release-{release.id}"
+        else:
+            content = export_grades_to_excel(task_id, payload.teacher_revisions if payload else [])
+            label = "draft"
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    filename = f"gradetap-task-{task_id}-results.xlsx"
+    filename = f"gradetap-task-{task_id}-{label}.xlsx"
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

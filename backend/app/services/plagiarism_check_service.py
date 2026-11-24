@@ -15,7 +15,7 @@ from app.db.models import (
     StudentPlagiarismSummary,
     StudentSubmission,
 )
-from app.db.session import Base, SessionLocal, engine
+from app.db.session import SessionLocal
 from app.models.answer import AnswerExtractionStatus
 from app.models.plagiarism import PlagiarismCheckStatus, PlagiarismRiskLevel
 from app.schemas.plagiarism import (
@@ -41,7 +41,6 @@ class PlagiarismCheckService:
     snippet_context_chars = 40
 
     def run_check(self, task_id: int) -> PlagiarismRunResponse:
-        self._ensure_schema()
         with SessionLocal() as db:
             submissions = db.scalars(
                 select(StudentSubmission)
@@ -141,13 +140,11 @@ class PlagiarismCheckService:
             )
 
     def get_latest_check(self, task_id: int) -> PlagiarismCheckRead | None:
-        self._ensure_schema()
         with SessionLocal() as db:
             check = self._latest_check(db, task_id)
             return self._check_to_schema(check) if check else None
 
     def list_student_summaries(self, task_id: int) -> PlagiarismStudentsResponse:
-        self._ensure_schema()
         with SessionLocal() as db:
             check = self._latest_check(db, task_id)
             if check is None:
@@ -165,7 +162,6 @@ class PlagiarismCheckService:
             )
 
     def get_student_detail(self, task_id: int, student_submission_id: int) -> PlagiarismStudentDetailRead:
-        self._ensure_schema()
         with SessionLocal() as db:
             check = self._latest_check(db, task_id)
             if check is None:
@@ -217,20 +213,10 @@ class PlagiarismCheckService:
             )
 
     def clear_task_results(self, task_id: int) -> None:
-        self._ensure_schema()
         with SessionLocal() as db:
             self._clear_task_results(db, task_id)
             db.commit()
 
-    def _ensure_schema(self) -> None:
-        Base.metadata.create_all(
-            bind=engine,
-            tables=[
-                PlagiarismCheck.__table__,
-                StudentPlagiarismSummary.__table__,
-                PlagiarismMatch.__table__,
-            ],
-        )
 
     def _clear_task_results(self, db, task_id: int) -> None:
         db.execute(delete(PlagiarismMatch).where(PlagiarismMatch.task_id == task_id))

@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import delete, inspect, or_, select, text
+from sqlalchemy import delete, or_, select, update
 
+from app.services.access import error, now
 from app.core.config import settings
 from app.db.models import (
+    GradeRelease, EvaluationVersion, Offering, Course, CourseAssignment, ClassGroup,
     AdaptiveGradingRule,
     AnswerEvidence,
     AnswerGroup,
@@ -35,30 +37,56 @@ from app.schemas.task import GradingTaskCreate, GradingTaskRead
 
 
 class TaskService:
-    def create_task(self, payload: GradingTaskCreate) -> GradingTaskRead:
-        self._ensure_task_schema()
+    def create_task(self, payload: GradingTaskCreate, owner_id: int) -> GradingTaskRead:
         with SessionLocal() as db:
+            offering = self._offering(db, payload.offering_id, owner_id)
+            assignment = db.get(CourseAssignment, payload.assignment_id) if payload.assignment_id else None
+            if payload.assignment_id and (assignment is None or assignment.course_id != offering.course_id):
+                raise error(404, "not_found", "课程作业不存在")
             task = GradingTask(
+                offering_id=offering.id, course_id=offering.course_id,
+                class_group_id=offering.class_group_id, assignment_id=payload.assignment_id,
                 task_name=payload.task_name,
-                course_name=payload.course_name,
-                assignment_name=payload.assignment_name,
-                class_name=payload.class_name,
+                course_name=db.get(Course, offering.course_id).course_name,
+                assignment_name=assignment.assignment_name if assignment else payload.assignment_name,
+                class_name=db.get(ClassGroup, offering.class_group_id).class_name,
                 status=GradingTaskStatus.CREATED,
                 grading_instruction=payload.grading_instruction,
             )
             db.add(task)
+            db.flush()
+            db.add(AuditLog(task_id=task.id, target_id=task.id, actor_id=owner_id, action="create_task", target_type="task"))
             db.commit()
             db.refresh(task)
             return self._to_read_schema(task)
 
-    def list_tasks(self) -> list[GradingTaskRead]:
-        self._ensure_task_schema()
+    def list_tasks(self, owner_id: int, offering_id: int | None, include_archived: bool) -> list[GradingTaskRead]:
         with SessionLocal() as db:
-            tasks = db.scalars(select(GradingTask).order_by(GradingTask.id.desc())).all()
+            query = select(GradingTask).join(Offering).where(Offering.owner_id == owner_id)
+            if offering_id is not None:
+                self._offering(db, offering_id, owner_id)
+                query = query.where(GradingTask.offering_id == offering_id)
+            if not include_archived:
+                query = query.where(GradingTask.archived_at.is_(None))
+            tasks = db.scalars(query.order_by(GradingTask.id.desc())).all()
             return [self._to_read_schema(task) for task in tasks]
 
+    def _offering(self, db, offering_id, owner_id):
+        offering = db.get(Offering, offering_id)
+        if offering is None or offering.owner_id != owner_id:
+            raise error(404, "not_found", "授课班不存在")
+        return offering
+
+    def archive(self, task_id, owner_id):
+        with SessionLocal() as db:
+            task = db.get(GradingTask, task_id)
+            if task.archived_at is None:
+                task.archived_at = now()
+                db.add(AuditLog(task_id=task_id, target_id=task_id, actor_id=owner_id, action="archive_task", target_type="task"))
+                db.commit()
+            return self._to_read_schema(task)
+
     def get_task(self, task_id: int) -> Optional[GradingTaskRead]:
-        self._ensure_task_schema()
         with SessionLocal() as db:
             task = db.get(GradingTask, task_id)
             if task is None:
@@ -71,10 +99,18 @@ class TaskService:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
 
-    def delete_task(self, task_id: int) -> None:
+    def delete_task(self, task_id: int, actor_id: int) -> None:
         with SessionLocal() as db:
-            if db.get(GradingTask, task_id) is None:
+            if db.get(GradingTask, task_id, with_for_update=True) is None:
                 raise HTTPException(status_code=404, detail="Task not found")
+
+            protected = [
+                select(TeacherRevision.id).where(TeacherRevision.task_id == task_id),
+                select(GradeRelease.id).where(GradeRelease.task_id == task_id),
+                select(EvaluationVersion.id).where(EvaluationVersion.task_id == task_id, EvaluationVersion.has_review),
+            ]
+            if any(db.scalar(query.limit(1)) for query in protected):
+                raise error(409, "task_delete_protected", "已有师评，请归档任务")
 
             files = db.scalars(select(UploadedFile).where(UploadedFile.task_id == task_id)).all()
             storage_paths = [f.storage_path for f in files if f.storage_path]
@@ -86,14 +122,6 @@ class TaskService:
                     or_(
                         GradingReflection.grading_result_id.in_(result_ids),
                         GradingReflection.task_id == task_id,
-                    ),
-                ),
-            )
-            db.execute(
-                delete(TeacherRevision).where(
-                    or_(
-                        TeacherRevision.grading_result_id.in_(result_ids),
-                        TeacherRevision.task_id == task_id,
                     ),
                 ),
             )
@@ -124,7 +152,9 @@ class TaskService:
             db.execute(delete(Question).where(Question.task_id == task_id))
 
             db.execute(delete(UploadedFile).where(UploadedFile.task_id == task_id))
-            db.execute(delete(AuditLog).where(AuditLog.task_id == task_id))
+            db.execute(update(AuditLog).where(AuditLog.task_id == task_id).values(task_id=None, deleted_task_id=task_id))
+            db.add(AuditLog(deleted_task_id=task_id, target_id=task_id, actor_id=actor_id, target_type="task", action="delete_task"))
+            db.execute(delete(EvaluationVersion).where(EvaluationVersion.task_id == task_id))
             db.execute(delete(GradingTask).where(GradingTask.id == task_id))
             db.commit()
 
@@ -138,7 +168,9 @@ class TaskService:
 
     def _to_read_schema(self, task: GradingTask) -> GradingTaskRead:
         return GradingTaskRead(
-            id=task.id,
+            id=task.id, offering_id=task.offering_id, course_id=task.course_id,
+            assignment_id=task.assignment_id, class_group_id=task.class_group_id,
+            submission_round=task.submission_round, is_archived=task.archived_at is not None, archived_at=task.archived_at,
             task_name=task.task_name,
             course_name=task.course_name,
             assignment_name=task.assignment_name or "",
@@ -154,13 +186,6 @@ class TaskService:
             return value.replace(tzinfo=timezone.utc)
         return value
 
-    def _ensure_task_schema(self) -> None:
-        table_name = GradingTask.__tablename__
-        with SessionLocal() as db:
-            existing_columns = {column["name"] for column in inspect(db.bind).get_columns(table_name)}
-            if "assignment_name" not in existing_columns:
-                db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN assignment_name VARCHAR(255) NOT NULL DEFAULT ''"))
-                db.commit()
 
 
 task_service = TaskService()

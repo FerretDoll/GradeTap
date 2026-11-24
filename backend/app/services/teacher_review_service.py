@@ -60,7 +60,8 @@ class TeacherReviewService:
         teacher_id: int | None = None,
     ) -> TeacherRevisionRead:
         with SessionLocal() as db:
-            result = db.get(GradingResult, grading_result_id)
+            db.get(GradingTask, task_id, with_for_update=True)
+            result = db.get(GradingResult, grading_result_id, with_for_update=True)
             if result is None or result.task_id != task_id:
                 raise ValueError("Grading result not found")
 

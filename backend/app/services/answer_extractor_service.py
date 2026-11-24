@@ -27,6 +27,7 @@ from app.db.models import (
     TeacherRevision,
     UploadedFile,
 )
+from app.services.history_service import preserve_evaluation
 from app.db.session import SessionLocal
 from app.models.answer import AnswerExtractionStatus
 from app.models.file import FileRole
@@ -728,6 +729,7 @@ class AnswerExtractorService:
         return on_delta
 
     def _clear_after_answer_extraction(self, db, task_id: int) -> None:
+        preserve_evaluation(db, task_id, "extract_answers")
         result_ids = select(GradingResult.id).where(GradingResult.task_id == task_id)
         db.execute(delete(GradingDeduction).where(GradingDeduction.grading_result_id.in_(result_ids)))
         db.execute(delete(GradingReflection).where(GradingReflection.grading_result_id.in_(result_ids)))
@@ -737,6 +739,7 @@ class AnswerExtractorService:
         db.execute(delete(StudentAnswer).where(StudentAnswer.task_id == task_id))
 
     def _clear_after_answer_extraction_for_submission(self, db, task_id: int, submission_id: int) -> None:
+        preserve_evaluation(db, task_id, "extract_answers")
         answer_ids = select(StudentAnswer.id).where(
             StudentAnswer.task_id == task_id,
             StudentAnswer.student_submission_id == submission_id,
@@ -901,23 +904,12 @@ class AnswerExtractorService:
         if existing_question is not None:
             return
 
-        assignment_name = task.assignment_name or task.task_name
-        assignments = db.scalars(
-            select(CourseAssignment)
-            .join(Course, Course.id == CourseAssignment.course_id)
-            .where(Course.course_name == task.course_name)
-            .order_by(
-                CourseAssignment.rubric_confirmed.desc(),
-                (CourseAssignment.assignment_name == assignment_name).desc(),
-                CourseAssignment.id.desc(),
-            ),
-        ).all()
-        if not assignments:
-            assignments = db.scalars(
-                select(CourseAssignment)
-                .where(CourseAssignment.assignment_name == assignment_name)
-                .order_by(CourseAssignment.rubric_confirmed.desc(), CourseAssignment.id.desc()),
-            ).all()
+        query = select(CourseAssignment).where(CourseAssignment.course_id == task.course_id)
+        if task.assignment_id is not None:
+            query = query.where(CourseAssignment.id == task.assignment_id)
+        else:
+            query = query.where(CourseAssignment.assignment_name == (task.assignment_name or task.task_name))
+        assignments = db.scalars(query.order_by(CourseAssignment.rubric_confirmed.desc(), CourseAssignment.id.desc())).all()
 
         assignment_questions = []
         for assignment in assignments:

@@ -36,6 +36,17 @@ class ProgressEventService:
             self._events[channel].append(progress_event)
             condition.notify_all()
 
+    def session_stream(self, channel: str, token: str):
+        from app.db.session import SessionLocal
+        from app.services.access import session_account
+
+        for event in self.stream(channel):
+            with SessionLocal() as db:
+                user = session_account(db, token)
+                if user is None or user.account_status != "active":
+                    return
+            yield event
+
     def stream(self, channel: str, heartbeat_seconds: float = 15.0) -> Generator[str, None, None]:
         last_event_id = self._events[channel][-1].event_id if self._events[channel] else 0
         while True:

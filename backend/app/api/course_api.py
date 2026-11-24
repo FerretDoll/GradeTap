@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
+from app.services.access import active_user
+from app.db.models import Account
+from fastapi import Request, Depends, APIRouter, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from app.models.file import FileRole
@@ -21,13 +23,13 @@ router = APIRouter()
 
 
 @router.post("", response_model=CourseRead, status_code=status.HTTP_201_CREATED)
-def create_course(payload: CourseCreate) -> CourseRead:
-    return course_service.create_course(payload)
+def create_course(payload: CourseCreate, user: Account = Depends(active_user)) -> CourseRead:
+    return course_service.create_course(payload, user.id)
 
 
 @router.get("", response_model=list[CourseRead])
-def list_courses() -> list[CourseRead]:
-    return course_service.list_courses()
+def list_courses(user: Account = Depends(active_user)) -> list[CourseRead]:
+    return course_service.list_courses(user.id)
 
 
 @router.get("/{course_id}", response_model=CourseRead)
@@ -125,9 +127,9 @@ def build_assignment_rubrics(course_id: int, assignment_id: int) -> dict:
 
 
 @router.get("/{course_id}/assignments/{assignment_id}/events")
-def stream_assignment_events(course_id: int, assignment_id: int) -> StreamingResponse:
+def stream_assignment_events(course_id: int, assignment_id: int, request: Request) -> StreamingResponse:
     return StreamingResponse(
-        progress_event_service.stream(f"assignment:{course_id}:{assignment_id}"),
+        progress_event_service.session_stream(f"assignment:{course_id}:{assignment_id}", request.cookies["gradetap_session"]),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

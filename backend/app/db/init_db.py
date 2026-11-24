@@ -1,11 +1,13 @@
-from __future__ import annotations
+"""Explicit CLI entry point for applications previously initialized with this module."""
+from pathlib import Path
 
-from app.db import models  # noqa: F401
-from app.db.session import Base, engine
+from alembic import command
+from alembic.config import Config
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    command.upgrade(config, "head")
 
 
 if __name__ == "__main__":

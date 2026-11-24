@@ -1,13 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.errors import install_errors
 from app.api.router import api_router
 from app.core.config import settings
-from app.db.init_db import init_db
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.app_name)
+    app = FastAPI(title=settings.app_name, version="0.3.0")
+    install_errors(app)
 
     app.add_middleware(
         CORSMiddleware,
@@ -18,10 +19,6 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix=settings.api_prefix)
-
-    @app.on_event("startup")
-    def on_startup() -> None:
-        init_db()
 
     @app.get("/health", tags=["health"])
     def health_check() -> dict[str, str]:

@@ -14,7 +14,8 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
         alias="BACKEND_CORS_ORIGINS",
     )
-    database_url: str = Field(default="sqlite:///./gradetap.db", alias="DATABASE_URL")
+    database_url: str = Field(alias="DATABASE_URL")
+    test_database_url: str | None = Field(default=None, alias="GRADETAP_TEST_DATABASE_URL")
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     local_storage_root: str = Field(default="./storage", alias="LOCAL_STORAGE_ROOT")
 

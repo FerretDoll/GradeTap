@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Response, UploadFile, status
+from app.services.access import active_user
+from app.db.models import Account
+from fastapi import Depends, APIRouter, File, Response, UploadFile, status
 
 from app.schemas.class_group import (
     ClassGroupCreate,
@@ -17,13 +19,13 @@ router = APIRouter()
 
 
 @router.post("", response_model=ClassGroupRead, status_code=status.HTTP_201_CREATED)
-def create_class_group(payload: ClassGroupCreate) -> ClassGroupRead:
-    return class_group_service.create_class_group(payload)
+def create_class_group(payload: ClassGroupCreate, user: Account = Depends(active_user)) -> ClassGroupRead:
+    return class_group_service.create_class_group(payload, user.id)
 
 
 @router.get("", response_model=list[ClassGroupRead])
-def list_class_groups() -> list[ClassGroupRead]:
-    return class_group_service.list_class_groups()
+def list_class_groups(user: Account = Depends(active_user)) -> list[ClassGroupRead]:
+    return class_group_service.list_class_groups(user.id)
 
 
 @router.get("/{class_group_id}/students", response_model=list[ClassStudentRead])

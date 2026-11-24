@@ -23,6 +23,7 @@ from app.db.models import (
     TeacherRevision,
     UploadedFile,
 )
+from app.services.history_service import preserve_evaluation
 from app.db.session import SessionLocal
 from app.models.file import FileRole
 from app.models.task import GradingTaskStatus
@@ -35,6 +36,10 @@ SINGLE_FILE_ROLES = {FileRole.REQUIREMENT, FileRole.REFERENCE_ANSWER}
 
 
 class FileService:
+    def _upload_round(self, db, task):
+        started = db.scalar(select(StudentSubmission.id).where(StudentSubmission.task_id == task.id).limit(1))
+        return task.submission_round + int(started is not None)
+
     async def upload_task_file(self, task_id: int, file_role: FileRole, file: UploadFile) -> TaskFileUploadResponse:
         if not file.filename:
             raise HTTPException(status_code=400, detail="File name is required")
@@ -76,11 +81,12 @@ class FileService:
                     ),
                 ).all()
                 for existing_file in existing_files:
-                    self._delete_storage_file(existing_file.storage_path)
+                    preserve_evaluation(db, task_id, "replace_file")
                     db.delete(existing_file)
 
             uploaded_file = UploadedFile(
                 task_id=task_id,
+                submission_round=self._upload_round(db, task),
                 file_name=file.filename,
                 file_role=file_role,
                 content_type=file.content_type or "",
@@ -112,8 +118,6 @@ class FileService:
             except ValueError as exc:
                 self._delete_storage_file(str(zip_path))
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            finally:
-                self._delete_storage_file(str(zip_path))
 
             uploaded_files: list[UploadedFileRead] = []
             for submission in extracted_submissions:
@@ -126,6 +130,7 @@ class FileService:
 
                 uploaded_file = UploadedFile(
                     task_id=task_id,
+                    submission_round=self._upload_round(db, task),
                     file_name=display_name,
                     file_role=FileRole.STUDENT_SUBMISSION,
                     content_type="text/plain",
@@ -163,14 +168,14 @@ class FileService:
             uploaded_file = db.get(UploadedFile, file_id)
             if uploaded_file is None or uploaded_file.task_id != task_id:
                 raise HTTPException(status_code=404, detail="File not found")
-            storage_path = uploaded_file.storage_path
             if uploaded_file.file_role == FileRole.STUDENT_SUBMISSION:
                 self._delete_student_submissions_for_file(db, task_id, file_id)
             db.delete(uploaded_file)
             db.commit()
-            self._delete_storage_file(storage_path)
+            # Physical originals are retained with evaluation history until the task is deleted.
 
     def _delete_student_submissions_for_file(self, db, task_id: int, file_id: int) -> None:
+        preserve_evaluation(db, task_id, "delete_file")
         submission_ids = db.scalars(
             select(StudentSubmission.id).where(
                 StudentSubmission.task_id == task_id,

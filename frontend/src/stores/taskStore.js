@@ -1,8 +1,14 @@
 import { defineStore } from "pinia";
 
-import { analyzeTaskQuestions, createTask, listTasks, parseTaskFiles } from "../api/tasks";
+import {
+  analyzeTaskQuestions,
+  archiveTask,
+  createTask,
+  deleteTask,
+  listTasks,
+  parseTaskFiles,
+} from "../api/tasks";
 
-const LOCAL_TASKS_KEY = "gradetap.tasks";
 const TASK_PROGRESS_STAGES = [
   "prepare_students",
   "extract_answers",
@@ -35,94 +41,58 @@ function taskProgressForStage(stageKey) {
   return Math.round((index / (TASK_PROGRESS_STAGES.length - 1)) * 100);
 }
 
-function readLocalTasks() {
-  try {
-    return JSON.parse(window.localStorage.getItem(LOCAL_TASKS_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-}
-
-function writeLocalTasks(tasks) {
-  window.localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(tasks));
-}
-
-function mergeTasks(primaryTasks, secondaryTasks) {
-  const seen = new Set();
-  return [...primaryTasks, ...secondaryTasks].filter((task) => {
-    if (seen.has(task.id)) {
-      return false;
-    }
-    seen.add(task.id);
-    return true;
-  });
+function withLocalProgress(task, previous) {
+  return {
+    progress: previous?.progress ?? 0,
+    current_stage: previous?.current_stage ?? "created",
+    ...task,
+  };
 }
 
 export const useTaskStore = defineStore("tasks", {
   state: () => ({
-    items: readLocalTasks(),
+    items: [],
     loading: false,
+    error: null,
   }),
   actions: {
-    async fetchTasks() {
+    async fetchTasks(query = {}) {
       this.loading = true;
+      this.error = null;
       try {
-        const remoteTasks = await listTasks();
-        this.items = mergeTasks(readLocalTasks(), remoteTasks);
-        writeLocalTasks(this.items);
-      } catch {
-        this.items = readLocalTasks();
+        const remoteTasks = await listTasks(query);
+        const previousById = new Map(this.items.map((task) => [task.id, task]));
+        this.items = remoteTasks.map((task) => withLocalProgress(task, previousById.get(task.id)));
+      } catch (error) {
+        this.items = [];
+        this.error = error;
       } finally {
         this.loading = false;
       }
+      return this.items;
     },
-    createTask(payload) {
-      const now = new Date().toISOString();
-      const optimisticTask = {
-        id: Date.now(),
-        ...payload,
-        status: "created",
-        progress: 0,
-        current_stage: "created",
-        created_at: now,
-        updated_at: now,
-      };
-
-      this.items = [optimisticTask, ...this.items];
-      writeLocalTasks(this.items);
-
-      createTask(payload)
-        .then((serverTask) => {
-          this.items = this.items.map((task) =>
-            task.id === optimisticTask.id
-              ? {
-                  progress: 0,
-                  current_stage: "created",
-                  ...serverTask,
-                }
-              : task,
-          );
-          writeLocalTasks(this.items);
-        })
-        .catch(() => {
-          // Keep the optimistic task visible when the API is not running yet.
-        });
-
-      return optimisticTask;
+    async createTask(payload) {
+      const task = withLocalProgress(await createTask(payload));
+      this.items = [task, ...this.items];
+      return task;
+    },
+    async removeTask(taskId) {
+      await deleteTask(taskId);
+      this.items = this.items.filter((task) => task.id !== taskId);
+    },
+    async archiveTask(taskId, { keepVisible = false } = {}) {
+      const archived = await archiveTask(taskId);
+      this.items = keepVisible
+        ? this.items.map((task) => (task.id === taskId ? withLocalProgress(archived, task) : task))
+        : this.items.filter((task) => task.id !== taskId);
+      return archived;
     },
     startTask(taskId) {
-      this.items = this.items.map((task) =>
-        task.id === taskId
-          ? {
-              ...task,
-              status: "grading",
-              progress: taskProgressForStage("extract_answers"),
-              current_stage: "extract_answers",
-              updated_at: new Date().toISOString(),
-            }
-          : task,
-      );
-      writeLocalTasks(this.items);
+      this.updateTask(taskId, {
+        status: "grading",
+        progress: taskProgressForStage("extract_answers"),
+        current_stage: "extract_answers",
+      });
     },
     updateTask(taskId, payload) {
       this.items = this.items.map((task) =>
@@ -134,42 +104,26 @@ export const useTaskStore = defineStore("tasks", {
             }
           : task,
       );
-      writeLocalTasks(this.items);
     },
     deleteTask(taskId) {
       this.items = this.items.filter((task) => task.id !== taskId);
-      writeLocalTasks(this.items);
     },
     async parseFiles(taskId) {
       const result = await parseTaskFiles(taskId);
-      this.items = this.items.map((task) =>
-        task.id === taskId
-          ? {
-              ...task,
-              status: result.status ?? "parsed",
-              progress: taskProgressForStage("analyze_questions"),
-              current_stage: "analyze_questions",
-              updated_at: new Date().toISOString(),
-            }
-          : task,
-      );
-      writeLocalTasks(this.items);
+      this.updateTask(taskId, {
+        status: result.status ?? "parsed",
+        progress: taskProgressForStage("analyze_questions"),
+        current_stage: "analyze_questions",
+      });
       return result;
     },
     async analyzeQuestions(taskId) {
       const result = await analyzeTaskQuestions(taskId);
-      this.items = this.items.map((task) =>
-        task.id === taskId
-          ? {
-              ...task,
-              status: result.status ?? "questions_analyzed",
-              progress: taskProgressForStage("build_rubrics"),
-              current_stage: "build_rubrics",
-              updated_at: new Date().toISOString(),
-            }
-          : task,
-      );
-      writeLocalTasks(this.items);
+      this.updateTask(taskId, {
+        status: result.status ?? "questions_analyzed",
+        progress: taskProgressForStage("build_rubrics"),
+        current_stage: "build_rubrics",
+      });
       return result;
     },
   },

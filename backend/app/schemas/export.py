@@ -18,4 +18,5 @@ class ExportTeacherRevision(BaseModel):
 
 
 class ExportResultsRequest(BaseModel):
+    release_id: int | None = Field(None, gt=0)
     teacher_revisions: list[ExportTeacherRevision] = Field(default_factory=list)

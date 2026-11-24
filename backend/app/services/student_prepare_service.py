@@ -25,6 +25,7 @@ from app.db.models import (
     TeacherRevision,
     UploadedFile,
 )
+from app.services.history_service import preserve_evaluation
 from app.db.session import SessionLocal
 from app.models.file import FileRole
 from app.models.task import GradingTaskStatus
@@ -74,6 +75,8 @@ class StudentPrepareService:
                 raise HTTPException(status_code=400, detail="请先上传学生作业文件")
 
             self._clear_after_student_prepare(db, task_id)
+
+            task.submission_round = max(file.submission_round for file in files)
 
             matches: list[StudentFileMatchRead] = []
             for student in students:
@@ -125,14 +128,13 @@ class StudentPrepareService:
             )
 
     def _find_task_class_group(self, db: Session, task: GradingTask) -> ClassGroup | None:
-        return db.scalars(
-            select(ClassGroup)
-            .where(ClassGroup.class_name == task.class_name)
-            .order_by(ClassGroup.id.desc()),
-        ).first()
+        return db.get(ClassGroup, task.class_group_id) if task.class_group_id else None
 
     def _match_student_files(self, student: ClassStudent, files: list[UploadedFile]) -> list[FileCandidate]:
         candidates = [candidate for file in files if (candidate := self._score_file(student, file))]
+        if candidates:
+            newest = max(item.file.submission_round for item in candidates)
+            candidates = [item for item in candidates if item.file.submission_round == newest]
         return sorted(candidates, key=lambda item: item.confidence, reverse=True)
 
     def _score_file(self, student: ClassStudent, file: UploadedFile) -> FileCandidate | None:
@@ -180,6 +182,7 @@ class StudentPrepareService:
         return re.sub(r"\s+", "", value or "").lower()
 
     def _clear_after_student_prepare(self, db: Session, task_id: int) -> None:
+        preserve_evaluation(db, task_id, "prepare_students")
         result_ids = select(GradingResult.id).where(GradingResult.task_id == task_id)
         db.execute(delete(GradingDeduction).where(GradingDeduction.grading_result_id.in_(result_ids)))
         db.execute(

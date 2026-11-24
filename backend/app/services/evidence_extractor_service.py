@@ -21,6 +21,7 @@ from app.db.models import (
     StudentSubmission,
     TeacherRevision,
 )
+from app.services.history_service import preserve_evaluation
 from app.db.session import SessionLocal
 from app.models.answer import AnswerExtractionStatus
 from app.models.task import GradingTaskStatus
@@ -844,6 +845,7 @@ class EvidenceExtractorService:
         }
 
     def _clear_after_evidence_extraction(self, db, task_id: int) -> None:
+        preserve_evaluation(db, task_id, "extract_evidence")
         result_ids = select(GradingResult.id).where(GradingResult.task_id == task_id)
         db.execute(delete(GradingDeduction).where(GradingDeduction.grading_result_id.in_(result_ids)))
         db.execute(delete(GradingReflection).where(GradingReflection.grading_result_id.in_(result_ids)))
@@ -852,6 +854,7 @@ class EvidenceExtractorService:
         db.execute(delete(AnswerEvidence).where(AnswerEvidence.task_id == task_id))
 
     def _clear_after_evidence_extraction_for_submission(self, db, task_id: int, submission_id: int) -> None:
+        preserve_evaluation(db, task_id, "extract_evidence")
         answer_ids = select(StudentAnswer.id).where(
             StudentAnswer.task_id == task_id,
             StudentAnswer.student_submission_id == submission_id,
